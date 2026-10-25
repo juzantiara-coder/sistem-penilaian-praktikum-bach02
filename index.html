@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistem Penilaian Praktikum - INSTIPER Yogyakarta</title>
+  <link rel="icon" type="image/png" href="logo-instiper.png">
+  
+  <!-- Google Fonts: Lora (Titles), Poppins (Body), JetBrains Mono (Codes) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;0,700;1,600;1,700&family=Poppins:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Poppins', 'system-ui', '-apple-system', 'sans-serif'],
+            title: ['Lora', 'Georgia', 'serif'],
+            serif: ['Lora', 'Georgia', 'serif'],
+            output: ['"Times New Roman"', 'Times', 'serif'],
+            mono: ['JetBrains Mono', 'Courier New', 'monospace']
+          },
+          colors: {
+            teal: {
+              50: '#f0f9f7',
+              100: '#daf0eb',
+              200: '#b7e3d8',
+              300: '#8acfc0',
+              400: '#5fb8a4',
+              500: '#56b29d', // Warna Utama Sesuai Screenshot
+              600: '#429683',
+              700: '#36786a',
+              800: '#2d6055',
+              900: '#264f47'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- SheetJS (Excel .xlsx parser & writer) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    /* Font Rules: 
+       - Judul = Font Lora (Bold)
+       - Output Nilai & Performa Praktikan = Font Times New Roman
+       - Lainnya = Font Poppins 
+    */
+    body {
+      font-family: 'Poppins', sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    h1, h2, h3, h4, .font-title, .title-serif {
+      font-family: 'Lora', Georgia, serif !important;
+      font-weight: 700 !important;
+    }
+
+    /* Output khusus praktikan: Font Times New Roman */
+    .output-praktikan, .output-praktikan *, .font-output-tnr, .font-output-tnr * {
+      font-family: 'Times New Roman', Times, serif !important;
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    /* Print Optimization (KHP Resmi) */
+    @media print {
+      header, aside, footer, #rekap-search-input, #rekap-filter-kelompok, button, .no-print {
+        display: none !important;
+      }
+      body {
+        background: white !important;
+        color: black !important;
+        padding: 0 !important;
+      }
+      main {
+        padding: 0 !important;
+      }
+      .print\:block {
+        display: block !important;
+      }
+      .shadow-sm, .shadow-md, .shadow-xl {
+        box-shadow: none !important;
+      }
+      .border {
+        border-color: #000 !important;
+      }
+    }
+  </style>
+</head>
+<body class="bg-[#56b29d] text-slate-800 min-h-screen flex flex-col antialiased selection:bg-[#429683] selection:text-white">
+
+  <!-- Container Utama Aplikasi (Dikelola oleh app.js) -->
+  <div id="app-root" class="flex-1 flex flex-col">
+    <!-- Loading Screen Awal -->
+    <div class="min-h-screen flex items-center justify-center bg-[#56b29d]">
+      <div class="bg-white p-8 rounded-2xl shadow-xl text-center space-y-4 max-w-sm w-full mx-4">
+        <img src="logo-instiper.png" alt="Logo INSTIPER" class="w-16 h-16 mx-auto object-contain drop-shadow mb-2">
+        <div class="w-8 h-8 border-3 border-[#56b29d] border-t-transparent rounded-full animate-spin mx-auto"></div>
+        <h3 class="font-title text-xl font-bold text-slate-800">INSTIPER YOGYAKARTA</h3>
+        <p class="text-xs text-slate-500">Memuat Sistem Informasi Penilaian Praktikum...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Skrip Data Awal & Logika Aplikasi -->
+  <script src="logo-base64.js"></script>
+  <script src="data-seed.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
