@@ -135,6 +135,7 @@ function saveCurrentPraktikumState() {
     cur.nama = (AppState.config && AppState.config.courseTitle) || cur.nama;
     cur.tahunAkademik = (AppState.config && AppState.config.academicYear) || cur.tahunAkademik;
     cur.semester = (AppState.config && AppState.config.semester) || cur.semester;
+    cur.weights = (AppState.config && AppState.config.weights) || cur.weights || DEFAULT_CONFIG.weights;
     cur.acaraList = AppState.acaraList;
     cur.praktikanList = AppState.praktikanList;
     cur.grades = AppState.grades;
@@ -149,6 +150,7 @@ function switchPraktikum(prakId) {
   AppState.config.courseTitle = p.nama;
   AppState.config.academicYear = p.tahunAkademik || AppState.config.academicYear;
   AppState.config.semester = p.semester || AppState.config.semester;
+  AppState.config.weights = p.weights || JSON.parse(JSON.stringify(DEFAULT_CONFIG.weights));
   AppState.acaraList = p.acaraList || JSON.parse(JSON.stringify(DEFAULT_ACARA));
   AppState.praktikanList = (p.praktikanList || []).map(normalizePraktikanItem);
   AppState.grades = p.grades || { laporan:{}, video:{}, performa:{}, sikap:{}, formatLaporan:{}, responsi:{}, k3Kedisiplinan:{}, kehadiran:{}, konsultasi:{}, catatanEvaluasi:{} };
@@ -191,7 +193,8 @@ function initAppState() {
     console.warn("URL params check error:", e);
   }
 
-  const savedState = localStorage.getItem('SIP_PRAKTIKUM_DATA_V1');
+  const STORAGE_KEY = 'SIP_PRAKTIKUM_DATA_V2';
+  const savedState = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('SIP_PRAKTIKUM_DATA_V1');
   if (savedState) {
     try {
       const parsed = JSON.parse(savedState);
@@ -199,10 +202,21 @@ function initAppState() {
       if (!AppState.config.googleAppsScriptUrl && DEFAULT_CONFIG.googleAppsScriptUrl) {
         AppState.config.googleAppsScriptUrl = DEFAULT_CONFIG.googleAppsScriptUrl;
       }
-      AppState.config.developerPin = "gigikuPutih@354";
       AppState.config.institution = "INSTITUT PERTANIAN STIPER (INSTIPER) YOGYAKARTA";
       AppState.koordinatorList = parsed.koordinatorList || DEFAULT_KOORDINATOR;
       AppState.coassList = sanitizeCoAssList(parsed.coassList || DEFAULT_COASS);
+
+      // Auto-sinkron Co.Ass jika masih ada data dummy lama (Ahmad Fauzi / Siti Rahmawati) atau Co.Ass asli belum lengkap
+      const hasOldDummyCoAss = AppState.coassList.some(c => 
+        c.nama.includes('Ahmad Fauzi') || c.nama.includes('Siti Rahmawati') || c.kodeLogin === 'COASS-FAUZI-02'
+      );
+      const hasRealCoAss = AppState.coassList.some(c => 
+        c.kodeLogin === 'COASS-7WRV-2' || c.nama.includes('Ismail Qori')
+      );
+      if (hasOldDummyCoAss || !hasRealCoAss || AppState.coassList.length < 4) {
+        AppState.coassList = JSON.parse(JSON.stringify(DEFAULT_COASS));
+      }
+
       AppState.praktikanList = (parsed.praktikanList || DEFAULT_PRAKTIKAN).map(normalizePraktikanItem);
       AppState.acaraList = parsed.acaraList || DEFAULT_ACARA;
       AppState.grades = parsed.grades || DEFAULT_GRADES;
@@ -211,6 +225,12 @@ function initAppState() {
         : (typeof DEFAULT_PRAKTIKUM_LIST !== 'undefined' ? JSON.parse(JSON.stringify(DEFAULT_PRAKTIKUM_LIST)) : []);
       AppState.activePraktikumId = parsed.activePraktikumId || (AppState.praktikumList[0] ? AppState.praktikumList[0].id : 'prak-default-1');
       AppState.filterKelompok = parsed.filterKelompok || 'all';
+
+      // Pastikan bobot aktif sinkron dengan praktikum aktif
+      const curP = getActivePraktikum();
+      if (curP && curP.weights) {
+        AppState.config.weights = curP.weights;
+      }
     } catch (e) {
       console.error("Error loading localStorage, resetting to default seeds", e);
       loadSeedData();
@@ -237,7 +257,6 @@ function initAppState() {
 
 function loadSeedData() {
   AppState.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
-  AppState.config.developerPin = "gigikuPutih@354";
   AppState.config.institution = "INSTITUT PERTANIAN STIPER (INSTIPER) YOGYAKARTA";
   AppState.koordinatorList = JSON.parse(JSON.stringify(DEFAULT_KOORDINATOR));
   AppState.coassList = sanitizeCoAssList(DEFAULT_COASS);
@@ -255,11 +274,20 @@ function loadSeedData() {
         deskripsi: "Praktikum terpadu INSTIPER Yogyakarta.",
         acaraList: AppState.acaraList,
         praktikanList: AppState.praktikanList,
+        weights: AppState.config.weights || DEFAULT_CONFIG.weights,
         grades: AppState.grades
       }];
   AppState.activePraktikumId = AppState.praktikumList[0].id;
   AppState.filterKelompok = 'all';
   saveStateToStorage();
+}
+
+let _debouncedCloudSync = null;
+function triggerAutoCloudSync() {
+  if (!_debouncedCloudSync) {
+    _debouncedCloudSync = debounce(() => syncWithGoogleSheets(false), 2000);
+  }
+  _debouncedCloudSync();
 }
 
 function saveStateToStorage() {
@@ -275,12 +303,21 @@ function saveStateToStorage() {
     activePraktikumId: AppState.activePraktikumId,
     filterKelompok: AppState.filterKelompok
   };
-  localStorage.setItem('SIP_PRAKTIKUM_DATA_V1', JSON.stringify(dataToSave));
+  localStorage.setItem('SIP_PRAKTIKUM_DATA_V2', JSON.stringify(dataToSave));
 
   // Auto sync ke Google Drive bila URL tersedia
   if (AppState.config && AppState.config.googleAppsScriptUrl) {
-    debounce(() => syncWithGoogleSheets(false), 2000)();
+    triggerAutoCloudSync();
   }
+}
+
+function resetCoAssToMaster() {
+  if (!confirm('Apakah Anda ingin menyinkronkan ulang data Co.Ass dengan Data Master (4 Co.Ass resmi: Justiar, Ismail, Abel, Fathur)?\\n\\nTindakan ini akan memulihkan data Co.Ass agar sama persis di seluruh perangkat.')) return;
+  AppState.coassList = JSON.parse(JSON.stringify(DEFAULT_COASS));
+  saveStateToStorage();
+  renderApp();
+  showToast('Data Co.Ass berhasil dipulihkan ke 4 Co.Ass Master!', 'success');
+  syncWithGoogleSheets(false);
 }
 
 /**
@@ -314,6 +351,9 @@ function loginDeveloper(username, password) {
     AppState.activeTab = 'rekap';
     renderApp();
     showToast(`Selamat datang, ${matched.nama}!`, 'success');
+    if (AppState.config && AppState.config.googleAppsScriptUrl) {
+      pullFromGoogleSheetsSilent(false);
+    }
     return true;
   }
 
@@ -333,6 +373,9 @@ function loginDeveloper(username, password) {
     AppState.activeTab = 'rekap';
     renderApp();
     showToast('Berhasil login sebagai Koordinator / Dospem!', 'success');
+    if (AppState.config && AppState.config.googleAppsScriptUrl) {
+      pullFromGoogleSheetsSilent(false);
+    }
     return true;
   }
 
@@ -368,6 +411,9 @@ function loginCoAss(kodeLogin) {
     }
     renderApp();
     showToast(`Selamat datang, Co.Ass ${coass.nama}!`, 'success');
+    if (AppState.config && AppState.config.googleAppsScriptUrl) {
+      pullFromGoogleSheetsSilent(false);
+    }
     return true;
   }
   showToast('Kode Login Co.Ass tidak ditemukan atau belum terdaftar.', 'error');
@@ -974,7 +1020,7 @@ function renderSidebar() {
       id: 'pengaturan',
       label: 'Pengaturan & Drive',
       icon: 'settings',
-      roles: ['developer', 'coass']
+      roles: ['developer']
     }
   ];
 
@@ -2322,10 +2368,20 @@ function renderManajemenCoAssView() {
             Atur asisten praktikum dan buatkan kode login khusus unik untuk tiap Co.Ass (Sistem Co.Ass Bergilir Tiap Kelompok).
           </p>
         </div>
-        <button onclick="openModalTambahCoAss()" class="bg-[#56b29d] hover:bg-[#469c88] text-white text-xs font-semibold py-2 px-4 rounded-xl shadow-sm flex items-center space-x-2 transition">
-          <i data-lucide="user-plus" class="w-4 h-4"></i>
-          <span>Tambah Co.Ass Baru</span>
-        </button>
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="pullFromGoogleSheetsSilent(true)" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-sm flex items-center space-x-1.5 transition" title="Tarik pembaruan data Co.Ass langsung dari Google Drive">
+            <i data-lucide="cloud-download" class="w-4 h-4"></i>
+            <span>Tarik dari Drive</span>
+          </button>
+          <button onclick="resetCoAssToMaster()" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-sm flex items-center space-x-1.5 transition" title="Reset ke 4 Co.Ass Master resmi (Justiar, Ismail, Abel, Fathur)">
+            <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+            <span>Reset 4 Co.Ass Master</span>
+          </button>
+          <button onclick="openModalTambahCoAss()" class="bg-[#56b29d] hover:bg-[#469c88] text-white text-xs font-semibold py-2 px-4 rounded-xl shadow-sm flex items-center space-x-2 transition">
+            <i data-lucide="user-plus" class="w-4 h-4"></i>
+            <span>Tambah Co.Ass Baru</span>
+          </button>
+        </div>
       </div>
 
       <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -2387,14 +2443,13 @@ function renderManajemenCoAssView() {
  */
 function renderPengaturanView() {
   const cfg = AppState.config;
-  const w = cfg.weights;
 
   return `
     <div class="space-y-6 max-w-4xl mx-auto">
       <div>
         <h2 class="font-title text-2xl font-bold text-slate-900 tracking-tight">Pengaturan Praktikum & Google Drive</h2>
         <p class="text-xs text-slate-500 mt-1">
-          Sesuaikan nama praktikum, bobot persentase, PIN Koordinator, dan integrasi Google Drive (${escapeHtml(cfg.developerEmail)}).
+          Kelola integrasi database Google Drive (${escapeHtml(cfg.developerEmail)}), praktikum aktif & bobot nilai, serta akun login Koordinator / Dospem.
         </p>
       </div>
 
@@ -2418,16 +2473,22 @@ function renderPengaturanView() {
         <div class="space-y-3">
           <div>
             <label class="block text-xs font-semibold text-slate-700 mb-1">URL Web App Google Apps Script</label>
-            <div class="flex items-center space-x-2">
+            <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <input type="url" id="setting-apps-script-url" value="${escapeHtml(cfg.googleAppsScriptUrl || '')}" 
                 placeholder="https://script.google.com/macros/s/AKfycb.../exec" 
                 class="flex-1 px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-mono focus:ring-1 focus:ring-[#56b29d]">
-              <button onclick="testGoogleDriveConnection()" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-semibold py-2 px-3.5 rounded-lg text-xs transition shrink-0 flex items-center space-x-1">
-                <i data-lucide="plug" class="w-3.5 h-3.5"></i>
-                <span>Tes Koneksi</span>
-              </button>
+              <div class="flex items-center gap-2">
+                <button onclick="saveDriveSettings()" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-semibold py-2 px-3.5 rounded-lg text-xs transition shrink-0 flex items-center space-x-1 shadow-sm" title="Simpan URL ke browser">
+                  <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                  <span>Simpan URL</span>
+                </button>
+                <button onclick="testGoogleDriveConnection()" class="bg-slate-800 hover:bg-slate-900 text-white font-semibold py-2 px-3.5 rounded-lg text-xs transition shrink-0 flex items-center space-x-1 shadow-sm" title="Tes koneksi ke Google Drive">
+                  <i data-lucide="plug" class="w-3.5 h-3.5"></i>
+                  <span>Tes Koneksi</span>
+                </button>
+              </div>
             </div>
-            <p class="text-[11px] text-slate-500 mt-1">Salin URL Web App yang didapat dari Google Apps Script (Langkah 4), lalu klik Tes Koneksi.</p>
+            <p class="text-[11px] text-slate-500 mt-1">Salin URL Web App yang didapat dari Google Apps Script (Langkah 4), lalu klik Simpan URL atau Tes Koneksi.</p>
           </div>
 
           <!-- PANDUAN LANGKAH 5 & TOMBOL SINKRONISASI -->
@@ -2462,7 +2523,7 @@ function renderPengaturanView() {
         </div>
       </div>
 
-      <!-- KARTU 2: KELOLA MULTI-PRAKTIKUM -->
+      <!-- KARTU 2: KELOLA MULTI-PRAKTIKUM & BOBOT KOMPONEN -->
       <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-3">
           <div class="flex items-center space-x-3">
@@ -2470,8 +2531,8 @@ function renderPengaturanView() {
               <i data-lucide="folder-kanban" class="w-5 h-5"></i>
             </div>
             <div>
-              <h3 class="font-title font-bold text-slate-900 text-base">Kelola Multi-Praktikum</h3>
-              <p class="text-xs text-slate-500">Buat praktikum baru, tentukan acara, penugasan Co.Ass, dan kelompok praktikan.</p>
+              <h3 class="font-title font-bold text-slate-900 text-base">Kelola Multi-Praktikum & Bobot Komponen Penilaian</h3>
+              <p class="text-xs text-slate-500">Buat praktikum baru, tentukan bobot penilaian, acara, penugasan Co.Ass, dan kelompok praktikan.</p>
             </div>
           </div>
           <button onclick="openModalBuatPraktikum()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-3.5 rounded-lg text-xs transition flex items-center space-x-1.5 shadow-sm">
@@ -2489,6 +2550,7 @@ function renderPengaturanView() {
                 <th class="p-2.5">Periode</th>
                 <th class="p-2.5">Kelompok</th>
                 <th class="p-2.5">Acara</th>
+                <th class="p-2.5">Bobot Komponen</th>
                 <th class="p-2.5 text-center">Status</th>
                 <th class="p-2.5 text-center">Aksi</th>
               </tr>
@@ -2498,6 +2560,7 @@ function renderPengaturanView() {
                 const isActive = prak.id === AppState.activePraktikumId;
                 const jmlAcara = (prak.acaraList && prak.acaraList.length) || 0;
                 const jmlKel = prak.jumlahKelompok || 8;
+                const pw = prak.weights || { laporan: 35, video: 10, performa: 15, sikap: 10, responsi: 20, formatLaporan: 5, k3Kedisiplinan: 5 };
                 return `
                   <tr class="hover:bg-slate-50 transition ${isActive ? 'bg-emerald-50/40 font-medium' : ''}">
                     <td class="p-2.5 text-center text-slate-400 font-mono">${idx + 1}</td>
@@ -2508,6 +2571,17 @@ function renderPengaturanView() {
                     <td class="p-2.5 text-slate-600">${escapeHtml(prak.semester || 'Ganjil')} ${escapeHtml(prak.tahunAkademik || '2026/2027')}</td>
                     <td class="p-2.5 font-mono text-slate-700">${jmlKel} Kelompok</td>
                     <td class="p-2.5 font-mono text-slate-700">${jmlAcara} Acara</td>
+                    <td class="p-2.5 text-[11px] text-slate-600">
+                      <div class="flex flex-wrap gap-1 max-w-xs">
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Lap: ${pw.laporan ?? 35}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Vid: ${pw.video ?? 10}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Perf: ${pw.performa ?? 15}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Sik: ${pw.sikap ?? 10}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Resp: ${pw.responsi ?? 20}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Fmt: ${pw.formatLaporan ?? 5}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">K3: ${pw.k3Kedisiplinan ?? 5}%</span>
+                      </div>
+                    </td>
                     <td class="p-2.5 text-center">
                       ${isActive ? `
                         <span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-600 text-white shadow-sm inline-block">Sedang Digunakan</span>
@@ -2518,7 +2592,7 @@ function renderPengaturanView() {
                       `}
                     </td>
                     <td class="p-2.5 text-center space-x-1 whitespace-nowrap">
-                      <button onclick="editPraktikum('${escapeHtml(prak.id)}')" class="p-1 text-[#36786a] hover:text-[#1b5e20]" title="Edit Praktikum">
+                      <button onclick="editPraktikum('${escapeHtml(prak.id)}')" class="p-1 text-[#36786a] hover:text-[#1b5e20]" title="Edit Praktikum & Bobot">
                         <i data-lucide="edit-3" class="w-4 h-4"></i>
                       </button>
                       ${AppState.praktikumList.length > 1 ? `
@@ -2535,7 +2609,7 @@ function renderPengaturanView() {
         </div>
       </div>
 
-      <!-- KARTU 2: AKUN LOGIN KOORDINATOR & DOSPEM -->
+      <!-- KARTU 3: AKUN LOGIN KOORDINATOR & DOSPEM -->
       <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <div class="flex items-center justify-between pb-2 border-b border-slate-200">
           <div>
@@ -2592,82 +2666,6 @@ function renderPengaturanView() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      <!-- KARTU 3: IDENTITAS PRAKTIKUM & PIN -->
-      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <h3 class="font-title font-bold text-slate-900 text-base pb-2 border-b border-slate-200">Identitas Praktikum & PIN Koordinator</h3>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Nama Praktikum / Mata Kuliah</label>
-            <input type="text" id="setting-course-title" value="${escapeHtml(cfg.courseTitle)}" class="w-full px-3 py-2 rounded-lg border border-slate-300 font-title font-bold">
-          </div>
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">Institusi / Fakultas</label>
-            <input type="text" id="setting-institution" value="${escapeHtml(cfg.institution)}" class="w-full px-3 py-2 rounded-lg border border-slate-300 font-title">
-          </div>
-          <div class="grid grid-cols-2 gap-2">
-            <div>
-              <label class="block font-semibold text-slate-700 mb-1">Tahun Akademik</label>
-              <input type="text" id="setting-academic-year" value="${escapeHtml(cfg.academicYear)}" class="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono">
-            </div>
-            <div>
-              <label class="block font-semibold text-slate-700 mb-1">Semester</label>
-              <input type="text" id="setting-semester" value="${escapeHtml(cfg.semester)}" class="w-full px-3 py-2 rounded-lg border border-slate-300">
-            </div>
-          </div>
-          <div>
-            <label class="block font-semibold text-slate-700 mb-1">PIN Login Koordinator</label>
-            <input type="text" id="setting-developer-pin" value="${escapeHtml(cfg.developerPin)}" class="w-full px-3 py-2 rounded-lg border border-slate-300 font-mono font-bold text-[#2d6055]">
-            <p class="text-[10px] text-slate-400 mt-1">PIN Anda saat ini: <code>gigikuPutih@354</code></p>
-          </div>
-        </div>
-      </div>
-
-      <!-- KARTU 3: BOBOT KOMPONEN -->
-      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-        <div class="flex items-center justify-between pb-2 border-b border-slate-200">
-          <h3 class="font-title font-bold text-slate-900 text-base">Bobot Komponen Penilaian</h3>
-          <span id="setting-total-weight-badge" class="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-mono font-bold">Total: 100%</span>
-        </div>
-
-        <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2.5 text-center text-xs">
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Laporan</label>
-            <input type="number" min="0" max="100" id="weight-laporan" value="${w.laporan}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Video</label>
-            <input type="number" min="0" max="100" id="weight-video" value="${w.video}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Performa</label>
-            <input type="number" min="0" max="100" id="weight-performa" value="${w.performa}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Sikap</label>
-            <input type="number" min="0" max="100" id="weight-sikap" value="${w.sikap}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Responsi</label>
-            <input type="number" min="0" max="100" id="weight-responsi" value="${w.responsi}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Format</label>
-            <input type="number" min="0" max="100" id="weight-format" value="${w.formatLaporan}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-          <div>
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">K3</label>
-            <input type="number" min="0" max="100" id="weight-k3" value="${w.k3Kedisiplinan}" oninput="calculateTotalWeightSettings()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
-          </div>
-        </div>
-      </div>
-
-      <!-- Tombol Simpan -->
-      <div class="flex justify-end pt-2">
-        <button onclick="saveGeneralSettings()" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-bold py-2.5 px-6 rounded-xl shadow-sm text-xs transition">
-          Simpan Semua Pengaturan
-        </button>
       </div>
     </div>
   `;
@@ -3191,6 +3189,7 @@ function handleTambahCoAssSubmit(e) {
   closeModal();
   renderApp();
   showToast(`Co.Ass ${nama} berhasil ditambahkan dengan kode: ${code}`, 'success');
+  syncWithGoogleSheets(false);
 }
 
 function editCoAss(id) {
@@ -3272,6 +3271,7 @@ function handleEditCoAssSubmit(e, id) {
   closeModal();
   renderApp();
   showToast(`Data Co.Ass ${c.nama} berhasil diperbarui!`, 'success');
+  syncWithGoogleSheets(false);
 }
 
 function hapusCoAss(id) {
@@ -3288,6 +3288,7 @@ function hapusCoAss(id) {
   saveStateToStorage();
   renderApp();
   showToast(`Data Co.Ass "${deletedName}" berhasil dihapus.`, 'info');
+  syncWithGoogleSheets(false);
 }
 
 // Modal Tambah Praktikan Manual
@@ -3369,6 +3370,7 @@ function handleTambahPraktikanSubmit(e) {
   closeModal();
   renderApp();
   showToast(`Praktikan ${nama} (${nim}) berhasil didaftarkan!`, 'success');
+  syncWithGoogleSheets(false);
 }
 
 function editPraktikan(id) {
@@ -3461,6 +3463,7 @@ function handleEditPraktikanSubmit(e, id) {
   closeModal();
   renderApp();
   showToast(`Data praktikan ${p.nama} (${p.nim}) berhasil diperbarui!`, 'success');
+  syncWithGoogleSheets(false);
 }
 
 function hapusPraktikan(id) {
@@ -3487,6 +3490,7 @@ function hapusPraktikan(id) {
   saveStateToStorage();
   renderApp();
   showToast(`Praktikan "${target.nama}" berhasil dihapus.`, 'info');
+  syncWithGoogleSheets(false);
 }
 
 // ==========================================
@@ -3513,12 +3517,23 @@ function openModalBuatPraktikum(prakId = null) {
     { id: 5, nama: 'Acara 5', wajibVideo: false }
   ];
 
+  const defaultWeights = {
+    laporan: 35,
+    video: 10,
+    performa: 15,
+    sikap: 10,
+    responsi: 20,
+    formatLaporan: 5,
+    k3Kedisiplinan: 5
+  };
+  const initialWeights = (cur && cur.weights) ? cur.weights : (AppState.config && AppState.config.weights ? AppState.config.weights : defaultWeights);
+
   modalContent.innerHTML = `
     <div class="space-y-4 max-w-xl mx-auto">
       <div class="flex items-center justify-between pb-3 border-b border-slate-200">
         <div>
-          <h3 class="font-title text-base font-bold text-slate-900">${isEdit ? 'Edit Praktikum' : 'Buat Praktikum Baru'}</h3>
-          <p class="text-xs text-slate-500">Isi identitas praktikum, jumlah kelompok, acara praktikum, penugasan Co.Ass, dan data praktikan.</p>
+          <h3 class="font-title text-base font-bold text-slate-900">${isEdit ? 'Edit Praktikum & Bobot Penilaian' : 'Buat Praktikum Baru'}</h3>
+          <p class="text-xs text-slate-500">Isi identitas praktikum, bobot nilai, jumlah kelompok, acara praktikum, penugasan Co.Ass, dan data praktikan.</p>
         </div>
         <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
       </div>
@@ -3549,7 +3564,48 @@ function openModalBuatPraktikum(prakId = null) {
           </div>
         </div>
 
-        <!-- 2. Acara Praktikum -->
+        <!-- 2. Bobot Komponen Penilaian Praktikum Ini -->
+        <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="font-semibold text-slate-800">Bobot Komponen Penilaian Praktikum</span>
+              <p class="text-[11px] text-slate-500">Tentukan persentase bobot tiap komponen untuk praktikum ini (Total harus 100%)</p>
+            </div>
+            <span id="modal-prak-total-weight-badge" class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-mono font-bold">Total: 100%</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 text-center text-xs pt-1">
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Laporan</label>
+              <input type="number" min="0" max="100" id="modal-weight-laporan" value="${initialWeights.laporan ?? 35}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Video</label>
+              <input type="number" min="0" max="100" id="modal-weight-video" value="${initialWeights.video ?? 10}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Performa</label>
+              <input type="number" min="0" max="100" id="modal-weight-performa" value="${initialWeights.performa ?? 15}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Sikap</label>
+              <input type="number" min="0" max="100" id="modal-weight-sikap" value="${initialWeights.sikap ?? 10}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Responsi</label>
+              <input type="number" min="0" max="100" id="modal-weight-responsi" value="${initialWeights.responsi ?? 20}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Format</label>
+              <input type="number" min="0" max="100" id="modal-weight-format" value="${initialWeights.formatLaporan ?? 5}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">K3</label>
+              <input type="number" min="0" max="100" id="modal-weight-k3" value="${initialWeights.k3Kedisiplinan ?? 5}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Acara Praktikum -->
         <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
           <div class="flex items-center justify-between">
             <span class="font-semibold text-slate-800">Daftar Acara Praktikum</span>
@@ -3575,7 +3631,7 @@ function openModalBuatPraktikum(prakId = null) {
           </div>
         </div>
 
-        <!-- 3. Penugasan Co.Ass -->
+        <!-- 4. Penugasan Co.Ass -->
         <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
           <label class="block font-semibold text-slate-800">Co.Ass yang Ditugaskan (Sistem Bergilir Tiap Kelompok)</label>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-28 overflow-y-auto">
@@ -3588,7 +3644,7 @@ function openModalBuatPraktikum(prakId = null) {
           </div>
         </div>
 
-        <!-- 4. Pengisian Data Praktikan -->
+        <!-- 5. Pengisian Data Praktikan -->
         ${!isEdit ? `
           <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
             <label class="block font-semibold text-slate-800">Pengisian Data Praktikan Masing-Masing Kelompok</label>
@@ -3626,7 +3682,28 @@ function openModalBuatPraktikum(prakId = null) {
   `;
 
   modalContainer.classList.remove('hidden');
+  calculateModalTotalWeight();
   if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function calculateModalTotalWeight() {
+  const lap = parseFloat(document.getElementById('modal-weight-laporan')?.value) || 0;
+  const vid = parseFloat(document.getElementById('modal-weight-video')?.value) || 0;
+  const perf = parseFloat(document.getElementById('modal-weight-performa')?.value) || 0;
+  const sik = parseFloat(document.getElementById('modal-weight-sikap')?.value) || 0;
+  const resp = parseFloat(document.getElementById('modal-weight-responsi')?.value) || 0;
+  const fmt = parseFloat(document.getElementById('modal-weight-format')?.value) || 0;
+  const k3 = parseFloat(document.getElementById('modal-weight-k3')?.value) || 0;
+  const total = Math.round(lap + vid + perf + sik + resp + fmt + k3);
+  const badge = document.getElementById('modal-prak-total-weight-badge');
+  if (badge) {
+    badge.innerText = `Total: ${total}%`;
+    if (total === 100) {
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-mono font-bold';
+    } else {
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 font-mono font-bold animate-pulse';
+    }
+  }
 }
 
 function tambahBarisAcaraModal() {
@@ -3666,6 +3743,25 @@ function handleBuatPraktikumSubmit(e, prakId = null) {
   const semester = document.getElementById('modal-prak-semester').value.trim();
   const jmlKelompok = parseInt(document.getElementById('modal-prak-kelompok').value) || 8;
 
+  // Baca bobot komponen penilaian praktikum
+  const wLaporan = parseFloat(document.getElementById('modal-weight-laporan')?.value) || 0;
+  const wVideo = parseFloat(document.getElementById('modal-weight-video')?.value) || 0;
+  const wPerforma = parseFloat(document.getElementById('modal-weight-performa')?.value) || 0;
+  const wSikap = parseFloat(document.getElementById('modal-weight-sikap')?.value) || 0;
+  const wResponsi = parseFloat(document.getElementById('modal-weight-responsi')?.value) || 0;
+  const wFormat = parseFloat(document.getElementById('modal-weight-format')?.value) || 0;
+  const wK3 = parseFloat(document.getElementById('modal-weight-k3')?.value) || 0;
+
+  const weightsObj = {
+    laporan: wLaporan,
+    video: wVideo,
+    performa: wPerforma,
+    sikap: wSikap,
+    responsi: wResponsi,
+    formatLaporan: wFormat,
+    k3Kedisiplinan: wK3
+  };
+
   // Baca daftar acara
   const acaraRows = document.querySelectorAll('#modal-prak-acara-container [data-acara-row]');
   const acaraList = [];
@@ -3697,17 +3793,19 @@ function handleBuatPraktikumSubmit(e, prakId = null) {
       prak.jumlahKelompok = jmlKelompok;
       prak.acaraList = acaraList;
       prak.assignedCoassIds = assignedCoassIds;
+      prak.weights = weightsObj;
 
       if (AppState.activePraktikumId === prakId) {
         AppState.config.courseTitle = nama;
         AppState.config.academicYear = tahun;
         AppState.config.semester = semester;
+        AppState.config.weights = Object.assign({}, weightsObj);
         AppState.acaraList = acaraList;
       }
       saveStateToStorage();
       closeModal();
       renderApp();
-      showToast(`Praktikum "${nama}" berhasil diperbarui!`, 'success');
+      showToast(`Praktikum "${nama}" & bobot penilaian berhasil diperbarui!`, 'success');
       syncWithGoogleSheets(false);
     }
     return;
@@ -3772,6 +3870,7 @@ function handleBuatPraktikumSubmit(e, prakId = null) {
     jumlahKelompok: jmlKelompok,
     acaraList: acaraList,
     assignedCoassIds: assignedCoassIds,
+    weights: weightsObj,
     praktikanList: newPraktikanList,
     grades: {
       laporan: {},
@@ -4185,36 +4284,23 @@ function saveCurrentGradingForm(nim, acaraId) {
   showToast(`Nilai praktikan NIM ${nim} (Acara ${acaraId}) berhasil diperbarui & disimpan!`, 'success');
 }
 
-// Simpan Pengaturan Umum Koordinator
-function saveGeneralSettings() {
-  AppState.config.courseTitle = document.getElementById('setting-course-title').value.trim();
-  AppState.config.institution = document.getElementById('setting-institution').value.trim();
-  AppState.config.academicYear = document.getElementById('setting-academic-year').value.trim();
-  AppState.config.semester = document.getElementById('setting-semester').value.trim();
-  AppState.config.developerPin = document.getElementById('setting-developer-pin').value.trim();
-  AppState.config.googleAppsScriptUrl = document.getElementById('setting-apps-script-url').value.trim();
-
-  const wLaporan = parseFloat(document.getElementById('weight-laporan').value) || 0;
-  const wVideo = parseFloat(document.getElementById('weight-video').value) || 0;
-  const wPerforma = parseFloat(document.getElementById('weight-performa').value) || 0;
-  const wSikap = parseFloat(document.getElementById('weight-sikap').value) || 0;
-  const wResponsi = parseFloat(document.getElementById('weight-responsi').value) || 0;
-  const wFormat = parseFloat(document.getElementById('weight-format').value) || 0;
-  const wK3 = parseFloat(document.getElementById('weight-k3').value) || 0;
-
-  AppState.config.weights = {
-    laporan: wLaporan,
-    video: wVideo,
-    performa: wPerforma,
-    sikap: wSikap,
-    responsi: wResponsi,
-    formatLaporan: wFormat,
-    k3Kedisiplinan: wK3
-  };
-
+// Simpan Pengaturan Drive Google Apps Script
+function saveDriveSettings() {
+  const urlEl = document.getElementById('setting-apps-script-url');
+  if (urlEl) {
+    AppState.config.googleAppsScriptUrl = urlEl.value.trim();
+  }
   saveStateToStorage();
   renderApp();
-  showToast('Pengaturan praktikum dan PIN Koordinator berhasil disimpan!', 'success');
+  showToast('URL Google Apps Script berhasil disimpan!', 'success');
+  if (AppState.config.googleAppsScriptUrl) {
+    pullFromGoogleSheetsSilent(false);
+  }
+}
+
+// Fallback jika saveGeneralSettings dipanggil
+function saveGeneralSettings() {
+  saveDriveSettings();
 }
 
 /**
@@ -4728,6 +4814,13 @@ async function pullFromGoogleSheetsSilent(showToastNotice = false) {
 function bindGlobalEvents() {
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeModal();
+  });
+
+  // Sinkronisasi otomatis saat user kembali membuka tab/aplikasi (terutama di HP atau browser lain)
+  window.addEventListener('focus', () => {
+    if (AppState.config && AppState.config.googleAppsScriptUrl) {
+      pullFromGoogleSheetsSilent(false);
+    }
   });
 }
 

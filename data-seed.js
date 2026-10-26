@@ -260,7 +260,16 @@ const DEFAULT_PRAKTIKUM_LIST = [
     deskripsi: "Praktikum dasar sains dan teknologi laboratorium terpadu INSTIPER Yogyakarta.",
     acaraList: DEFAULT_ACARA,
     praktikanList: DEFAULT_PRAKTIKAN,
-    coassList: DEFAULT_COASS
+    coassList: DEFAULT_COASS,
+    weights: {
+      laporan: 35,
+      video: 10,
+      performa: 15,
+      sikap: 10,
+      responsi: 20,
+      formatLaporan: 5,
+      k3Kedisiplinan: 5
+    }
   }
 ];
 
