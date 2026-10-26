@@ -111,7 +111,7 @@ const INDIKATOR_RESPONSI = [
   { id: "resp_5", nama: "5. Ketepatan menjawab pertanyaan", bobot: 50 }
 ];
 
-// Indikator Tambahan: Kedisiplinan & Keselamatan Kerja (K3) (Cukup Indikator 2 dan 4 sesuai permintaan)
+// Indikator Tambahan: Penilaian Kedisiplinan (Cukup Indikator 2 dan 4 sesuai permintaan)
 const INDIKATOR_K3 = [
   { id: "k3_2", nama: "2. Ketepatan waktu pengumpulan seluruh tugas", bobot: 50 },
   { id: "k3_4", nama: "4. Kontribusi individu dalam kerja kelompok", bobot: 50 }
@@ -374,25 +374,36 @@ const DEFAULT_GRADES = {
     }
   },
 
-  // Responsi: { [nim]: { scores: {}, total: 0, catatan: "" } }
+  // Responsi (Terpisah, Sekali Isi, Predikat Video Individu & Kelompok):
   responsi: {
     "230101001": {
       scores: {
         resp_1: 88, resp_5: 85
       },
-      total: 86.5,
-      catatan: "Mampu menjelaskan konsep reaksi dan kaitan teori dengan hasil pengamatan."
+      videoIndividu: {
+        aktif: true,
+        predikat: "A",
+        skor: 92
+      },
+      videoKelompok: {
+        aktif: true,
+        predikat: "B",
+        skor: 86
+      },
+      predikatAkhir: "A",
+      total: 87.75,
+      catatan: "Mampu menjelaskan konsep reaksi dan kaitan teori dengan hasil pengamatan serta video presentasi responsi memuaskan."
     }
   },
 
-  // Kedisiplinan & K3: { [nim]: { scores: {}, total: 0, catatan: "" } }
+  // Penilaian Kedisiplinan: { [nim]: { scores: {}, total: 0, catatan: "" } }
   k3Kedisiplinan: {
     "230101001": {
       scores: {
         k3_2: 100, k3_4: 95
       },
       total: 97.5,
-      catatan: "Selalu mematuhi APD lengkap dan tidak pernah terlambat."
+      catatan: "Selalu mematuhi tata tertib laboratorium dan tepat waktu mengumpulkan tugas."
     }
   },
 

@@ -27,6 +27,7 @@ const AppState = {
     konsultasi: {},
     catatanEvaluasi: {}
   },
+  globalResponsi: {}, // Nilai responsi mandiri & terpisah (tidak terikat praktikum tertentu)
   // Manajemen Multi-Praktikum & Filter
   praktikumList: [], // Seluruh praktikum yang dibuat / terdaftar
   activePraktikumId: 'prak-default-1', // ID praktikum yang sedang aktif
@@ -154,6 +155,12 @@ function switchPraktikum(prakId) {
   AppState.acaraList = p.acaraList || JSON.parse(JSON.stringify(DEFAULT_ACARA));
   AppState.praktikanList = (p.praktikanList || []).map(normalizePraktikanItem);
   AppState.grades = p.grades || { laporan:{}, video:{}, performa:{}, sikap:{}, formatLaporan:{}, responsi:{}, k3Kedisiplinan:{}, kehadiran:{}, konsultasi:{}, catatanEvaluasi:{} };
+  if (!AppState.grades.responsi) AppState.grades.responsi = {};
+  if (AppState.globalResponsi) {
+    Object.keys(AppState.globalResponsi).forEach(nim => {
+      AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
+    });
+  }
   AppState.filterKelompok = 'all';
   if (AppState.praktikanList.length > 0) {
     AppState.selectedPraktikanNIM = AppState.praktikanList[0].nim;
@@ -220,6 +227,20 @@ function initAppState() {
       AppState.praktikanList = (parsed.praktikanList || DEFAULT_PRAKTIKAN).map(normalizePraktikanItem);
       AppState.acaraList = parsed.acaraList || DEFAULT_ACARA;
       AppState.grades = parsed.grades || DEFAULT_GRADES;
+      AppState.globalResponsi = parsed.globalResponsi || {};
+      if (AppState.grades && AppState.grades.responsi) {
+        Object.keys(AppState.grades.responsi).forEach(nim => {
+          if (!AppState.globalResponsi[nim]) {
+            AppState.globalResponsi[nim] = AppState.grades.responsi[nim];
+          }
+        });
+      }
+      if (AppState.globalResponsi && AppState.grades) {
+        if (!AppState.grades.responsi) AppState.grades.responsi = {};
+        Object.keys(AppState.globalResponsi).forEach(nim => {
+          AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
+        });
+      }
       AppState.praktikumList = (parsed.praktikumList && parsed.praktikumList.length > 0)
         ? parsed.praktikumList
         : (typeof DEFAULT_PRAKTIKUM_LIST !== 'undefined' ? JSON.parse(JSON.stringify(DEFAULT_PRAKTIKUM_LIST)) : []);
@@ -263,6 +284,7 @@ function loadSeedData() {
   AppState.praktikanList = JSON.parse(JSON.stringify(DEFAULT_PRAKTIKAN)).map(normalizePraktikanItem);
   AppState.acaraList = JSON.parse(JSON.stringify(DEFAULT_ACARA));
   AppState.grades = JSON.parse(JSON.stringify(DEFAULT_GRADES));
+  AppState.globalResponsi = (AppState.grades && AppState.grades.responsi) ? JSON.parse(JSON.stringify(AppState.grades.responsi)) : {};
   AppState.praktikumList = typeof DEFAULT_PRAKTIKUM_LIST !== 'undefined' 
     ? JSON.parse(JSON.stringify(DEFAULT_PRAKTIKUM_LIST))
     : [{
@@ -301,7 +323,8 @@ function saveStateToStorage() {
     grades: AppState.grades,
     praktikumList: AppState.praktikumList,
     activePraktikumId: AppState.activePraktikumId,
-    filterKelompok: AppState.filterKelompok
+    filterKelompok: AppState.filterKelompok,
+    globalResponsi: AppState.globalResponsi || {}
   };
   localStorage.setItem('SIP_PRAKTIKUM_DATA_V2', JSON.stringify(dataToSave));
 
@@ -532,14 +555,55 @@ function calculateFormatScore(scores) {
   return parseFloat(total.toFixed(2));
 }
 
-function calculateResponsiScore(scores) {
-  if (!scores) return 0;
-  let total = 0;
+function calculateResponsiScore(respData) {
+  if (!respData) return 0;
+  if (typeof respData === 'number') return respData;
+
+  const scores = respData.scores || respData;
+  let theoryTotal = 0;
+  let theoryWeight = 0;
   INDIKATOR_RESPONSI.forEach(ind => {
-    const val = parseFloat(scores[ind.id]) || 0;
-    total += (val * (ind.bobot / 100));
+    const val = parseFloat(scores[ind.id]);
+    if (!isNaN(val)) {
+      theoryTotal += (val * (ind.bobot / 100));
+      theoryWeight += ind.bobot;
+    }
   });
-  return parseFloat(total.toFixed(2));
+  if (theoryWeight > 0 && theoryWeight !== 100) {
+    theoryTotal = (theoryTotal / theoryWeight) * 100;
+  }
+
+  const predikatScoreMap = { 'A': 95, 'B': 85, 'C': 75, 'D': 65, 'E': 50 };
+  let components = [];
+  if (theoryWeight > 0) {
+    components.push(theoryTotal);
+  }
+
+  if (respData.videoIndividu && respData.videoIndividu.aktif) {
+    const vScore = (respData.videoIndividu.skor != null && !isNaN(parseFloat(respData.videoIndividu.skor)))
+      ? parseFloat(respData.videoIndividu.skor)
+      : (predikatScoreMap[respData.videoIndividu.predikat] || 95);
+    components.push(vScore);
+  }
+
+  if (respData.videoKelompok && respData.videoKelompok.aktif) {
+    const vScore = (respData.videoKelompok.skor != null && !isNaN(parseFloat(respData.videoKelompok.skor)))
+      ? parseFloat(respData.videoKelompok.skor)
+      : (predikatScoreMap[respData.videoKelompok.predikat] || 95);
+    components.push(vScore);
+  }
+
+  if (components.length === 0) return 0;
+  const avg = components.reduce((a, b) => a + b, 0) / components.length;
+  return parseFloat(avg.toFixed(2));
+}
+
+function getPredikatResponsi(score) {
+  if (score >= 90) return { predikat: 'A', label: 'Sangat Baik', color: 'emerald' };
+  if (score >= 80) return { predikat: 'B', label: 'Baik', color: 'blue' };
+  if (score >= 70) return { predikat: 'C', label: 'Cukup', color: 'amber' };
+  if (score >= 60) return { predikat: 'D', label: 'Kurang', color: 'orange' };
+  return { predikat: 'E', label: 'Sangat Kurang', color: 'rose' };
 }
 
 function calculateK3Score(scores) {
@@ -614,7 +678,7 @@ function getPraktikanCompleteSummary(nim) {
   const scoreFormat = formatEntry ? calculateFormatScore(formatEntry.scores) : 0;
 
   const responsiEntry = AppState.grades.responsi[nim];
-  const scoreResponsi = responsiEntry ? calculateResponsiScore(responsiEntry.scores) : 0;
+  const scoreResponsi = responsiEntry ? calculateResponsiScore(responsiEntry) : 0;
 
   const k3Entry = AppState.grades.k3Kedisiplinan[nim];
   const scoreK3 = k3Entry ? calculateK3Score(k3Entry.scores) : 0;
@@ -738,9 +802,19 @@ function getPraktikanCompleteSummary(nim) {
 /**
  * 4. RENDERING TAMPILAN UTAMA
  */
+function isAnyModalOpen() {
+  const modalContainer = document.getElementById('modal-container');
+  return Boolean(modalContainer && !modalContainer.classList.contains('hidden'));
+}
+
 function renderApp() {
   const root = document.getElementById('app-root');
   if (!root) return;
+
+  // Lindungi modal dialog saat sedang dibuka user (misal sedang membuat/mengedit praktikum atau Co.Ass)
+  if (isAnyModalOpen()) {
+    return;
+  }
 
   // Jika belum login, tampilkan halaman Login sederhana sesuai foto yang dikirimkan user
   if (!AppState.currentUser) {
@@ -1231,7 +1305,7 @@ function renderRekapitulasiView() {
             <div class="font-bold text-[#56b29d] mt-0.5 font-mono">${weights.formatLaporan}%</div>
           </div>
           <div class="p-2 rounded-lg bg-slate-50 border border-slate-200">
-            <span class="text-slate-500">K3</span>
+            <span class="text-slate-500">Kedisiplinan</span>
             <div class="font-bold text-[#56b29d] mt-0.5 font-mono">${weights.k3Kedisiplinan}%</div>
           </div>
         </div>
@@ -1269,7 +1343,7 @@ function renderRekapitulasiView() {
                 <th class="p-3 text-right">Sikap</th>
                 <th class="p-3 text-right">Responsi</th>
                 <th class="p-3 text-right">Format</th>
-                <th class="p-3 text-right">K3</th>
+                <th class="p-3 text-right">Kedisiplinan</th>
                 <th class="p-3 bg-[#3d8373] text-white font-bold">NILAI AKHIR</th>
                 <th class="p-3">Grade</th>
                 <th class="p-3">Status</th>
@@ -1351,7 +1425,12 @@ function renderInputNilaiCoAssView() {
   const perfEntry = AppState.grades.performa[selectedNim] || { scores: {}, checklist: {}, catatan: '' };
   const sikEntry = AppState.grades.sikap[selectedNim] || { scores: {}, catatan: '' };
   const fmtEntry = AppState.grades.formatLaporan[selectedNim] || { scores: {}, catatan: '' };
-  const respEntry = AppState.grades.responsi[selectedNim] || { scores: {}, catatan: '' };
+  const respEntry = AppState.grades.responsi[selectedNim] || (AppState.globalResponsi && AppState.globalResponsi[selectedNim]) || { 
+    scores: {}, 
+    videoIndividu: { aktif: false, predikat: 'A', skor: 95 },
+    videoKelompok: { aktif: false, predikat: 'A', skor: 95 },
+    catatan: '' 
+  };
   const k3Entry = AppState.grades.k3Kedisiplinan[selectedNim] || { scores: {}, catatan: '' };
 
   const currentLapTotal = calculateLaporanScore(lapEntry.scores);
@@ -1359,7 +1438,7 @@ function renderInputNilaiCoAssView() {
   const currentPerfTotal = calculatePerformaScore(perfEntry.scores);
   const currentSikTotal = calculateSikapScore(sikEntry.scores);
   const currentFmtTotal = calculateFormatScore(fmtEntry.scores);
-  const currentRespTotal = calculateResponsiScore(respEntry.scores);
+  const currentRespTotal = calculateResponsiScore(respEntry);
   const currentK3Total = calculateK3Score(k3Entry.scores);
 
   const lastUpdated = lapEntry.tanggal || new Date().toISOString().split('T')[0];
@@ -1465,7 +1544,7 @@ function renderInputNilaiCoAssView() {
           </button>
           <button onclick="switchGradingSubTab('tab-k3')" id="btn-sub-k3" class="py-3 px-4 text-slate-600 hover:text-[#56b29d] flex items-center space-x-1.5 transition">
             <i data-lucide="shield" class="w-4 h-4"></i>
-            <span>7. K3 (${currentK3Total})</span>
+            <span>7. Kedisiplinan (${currentK3Total})</span>
           </button>
           <button onclick="switchGradingSubTab('tab-kehadiran')" id="btn-sub-kehadiran" class="py-3 px-4 text-slate-600 hover:text-[#56b29d] flex items-center space-x-1.5 transition">
             <i data-lucide="calendar" class="w-4 h-4"></i>
@@ -1685,56 +1764,192 @@ function renderInputNilaiCoAssView() {
             </div>
           </div>
 
-          <!-- SUB-TAB 6: RESPONSI (8 INDIKATOR) -->
+          <!-- SUB-TAB 6: RESPONSI (MANDIRI & TERPISAH, PREDIKAT VIDEO INDIVIDU & KELOMPOK) -->
           <div id="subtab-content-tab-responsi" class="space-y-4 hidden">
-            <div class="flex items-center justify-between pb-3 border-b border-slate-200">
-              <div>
-                <h4 class="font-title text-base font-bold text-slate-900">Penilaian Responsi (Pemahaman Teori & Praktik)</h4>
-                <p class="text-xs text-slate-500">8 Indikator penguasaan materi, tanya-jawab alat, dan korelasi data.</p>
-              </div>
-              <div class="text-right">
-                <span class="text-xs text-slate-500">Skor Responsi:</span>
-                <div id="live-responsi-total" class="text-2xl font-bold font-mono text-[#56b29d]">${currentRespTotal}</div>
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-              ${INDIKATOR_RESPONSI.map((ind, idx) => `
-                <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/50 flex items-center justify-between gap-2">
-                  <div class="flex items-start space-x-2 flex-1">
-                    <span class="text-xs font-bold text-slate-400">${idx + 1}.</span>
-                    <div>
-                      <div class="text-xs font-medium text-slate-800 leading-tight">${escapeHtml(ind.nama)}</div>
-                      <span class="text-[10px] text-slate-400 font-mono">Bobot: ${ind.bobot}%</span>
-                    </div>
-                  </div>
-                  <div class="w-20 shrink-0">
-                    <input type="number" min="0" max="100" step="1" 
-                      id="input-resp-${ind.id}" 
-                      value="${respEntry.scores[ind.id] !== undefined ? respEntry.scores[ind.id] : 85}"
-                      oninput="updateLiveResponsiTotal()"
-                      class="w-full text-right font-mono font-bold py-1 px-1.5 rounded border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">
+            <!-- Banner Penilaian Mandiri & Terpisah -->
+            <div class="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div class="flex items-center space-x-2.5 text-emerald-900">
+                <div class="w-8 h-8 rounded-lg bg-emerald-100 text-[#36786a] flex items-center justify-center shrink-0">
+                  <i data-lucide="check-circle" class="w-4 h-4"></i>
+                </div>
+                <div>
+                  <div class="font-bold text-slate-900">Penilaian Responsi Terpisah & Mandiri</div>
+                  <div class="text-[11px] text-emerald-800">
+                    Responsi hanya diisi <strong>1 kali saja</strong> untuk tiap praktikan (tidak tiap pertemuan praktikum dan tidak terikat acara).
                   </div>
                 </div>
-              `).join('')}
+              </div>
+              <button type="button" onclick="saveOnlyResponsi('${escapeHtml(selectedNim)}')" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-bold py-2 px-3.5 rounded-lg text-xs shrink-0 flex items-center space-x-1.5 shadow-sm transition self-end sm:self-center">
+                <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                <span>Simpan Responsi Saja</span>
+              </button>
             </div>
 
-            <div>
-              <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan Responsi</label>
-              <textarea id="catatan-responsi" rows="2" placeholder="Catatan kedalaman konsep dan daya nalar praktikan..." 
-                class="w-full p-2.5 rounded-lg border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">${escapeHtml(respEntry.catatan || '')}</textarea>
+            <div class="flex items-center justify-between pb-2 border-b border-slate-200">
+              <div>
+                <h4 class="font-title text-base font-bold text-slate-900">Penilaian Responsi Pemahaman Materi</h4>
+                <p class="text-xs text-slate-500">Pertanyaan pemahaman materi dan ceklist predikat video responsi.</p>
+              </div>
+              <div class="text-right flex items-center space-x-2">
+                <div>
+                  <span class="text-[11px] text-slate-500 block">Skor Responsi:</span>
+                  <div id="live-responsi-total" class="text-2xl font-bold font-mono text-[#56b29d]">${currentRespTotal}</div>
+                </div>
+                <div id="live-responsi-predikat-badge" class="px-2.5 py-1 rounded-lg text-xs font-bold border border-emerald-300 bg-emerald-100 text-emerald-800 font-mono">
+                  ${getPredikatResponsi(currentRespTotal).predikat}
+                </div>
+              </div>
+            </div>
+
+            <!-- BAGIAN A: INDIKATOR TANYA-JAWAB TEORI -->
+            <div class="space-y-2">
+              <span class="text-xs font-bold text-slate-800 block">A. Indikator Penguasaan Teori & Responsi Lisan</span>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                ${INDIKATOR_RESPONSI.map((ind, idx) => `
+                  <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/50 flex items-center justify-between gap-2">
+                    <div class="flex items-start space-x-2 flex-1">
+                      <span class="text-xs font-bold text-slate-400">${idx + 1}.</span>
+                      <div>
+                        <div class="text-xs font-medium text-slate-800 leading-tight">${escapeHtml(ind.nama)}</div>
+                        <span class="text-[10px] text-slate-400 font-mono">Bobot: ${ind.bobot}%</span>
+                      </div>
+                    </div>
+                    <div class="w-20 shrink-0">
+                      <input type="number" min="0" max="100" step="1" 
+                        id="input-resp-${ind.id}" 
+                        value="${(respEntry.scores && respEntry.scores[ind.id] !== undefined) ? respEntry.scores[ind.id] : 85}"
+                        oninput="updateLiveResponsiTotal()"
+                        class="w-full text-right font-mono font-bold py-1 px-1.5 rounded border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+
+            <!-- BAGIAN B: PREDIKAT CEKLIST (OPSIONAL) VIDEO INDIVIDU & VIDEO KELOMPOK -->
+            <div class="space-y-3 pt-2">
+              <span class="text-xs font-bold text-slate-800 block">B. Predikat Penilaian Video Responsi (Ceklist Opsional)</span>
+              
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <!-- 1. Video Individu (Responsi) -->
+                <div class="p-3.5 rounded-xl border border-slate-200 bg-white shadow-sm space-y-2.5">
+                  <div class="flex items-center justify-between">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                      <input type="checkbox" id="check-resp-vid-ind" 
+                        ${(respEntry.videoIndividu && respEntry.videoIndividu.aktif) ? 'checked' : ''} 
+                        onchange="toggleRespVideoSection('ind', this.checked)"
+                        class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+                      <span class="text-xs font-bold text-slate-900">Video Individu (Responsi)</span>
+                    </label>
+                    <span class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Ceklist Opsional</span>
+                  </div>
+                  <p class="text-[11px] text-slate-500">Centang jika terdapat penilaian video individu pada responsi.</p>
+
+                  <div id="section-resp-vid-ind" class="${(respEntry.videoIndividu && respEntry.videoIndividu.aktif) ? '' : 'hidden'} space-y-2 pt-1 border-t border-slate-100">
+                    <div class="flex items-center justify-between">
+                      <label class="text-[11px] font-semibold text-slate-700">Pilih Predikat:</label>
+                      <span id="label-predikat-ind" class="text-[11px] font-bold text-[#36786a] font-mono">
+                        ${(respEntry.videoIndividu && respEntry.videoIndividu.predikat) || 'A'} (${(respEntry.videoIndividu && respEntry.videoIndividu.skor) || 95})
+                      </span>
+                    </div>
+                    <div class="grid grid-cols-5 gap-1.5 text-center">
+                      ${['A', 'B', 'C', 'D', 'E'].map(p => {
+                        const curPred = (respEntry.videoIndividu && respEntry.videoIndividu.predikat) || 'A';
+                        const isSel = curPred === p;
+                        return `
+                          <button type="button" onclick="selectRespPredikat('ind', '${p}')" 
+                            id="btn-pred-ind-${p}" 
+                            class="py-1 px-2 rounded-lg border text-xs font-bold transition ${isSel ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}">
+                            ${p}
+                          </button>
+                        `;
+                      }).join('')}
+                    </div>
+                    <input type="hidden" id="val-resp-vid-ind-pred" value="${(respEntry.videoIndividu && respEntry.videoIndividu.predikat) || 'A'}">
+                    <div class="flex items-center justify-between pt-1 text-[11px] text-slate-600">
+                      <span>Skor Angka Video Individu:</span>
+                      <input type="number" min="0" max="100" id="val-resp-vid-ind-skor" 
+                        value="${(respEntry.videoIndividu && respEntry.videoIndividu.skor != null) ? respEntry.videoIndividu.skor : 95}" 
+                        oninput="updateLiveResponsiTotal()" 
+                        class="w-16 py-0.5 px-1.5 text-right font-mono font-bold rounded border border-slate-300 text-xs">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 2. Video Kelompok (Responsi) -->
+                <div class="p-3.5 rounded-xl border border-slate-200 bg-white shadow-sm space-y-2.5">
+                  <div class="flex items-center justify-between">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                      <input type="checkbox" id="check-resp-vid-kel" 
+                        ${(respEntry.videoKelompok && respEntry.videoKelompok.aktif) ? 'checked' : ''} 
+                        onchange="toggleRespVideoSection('kel', this.checked)"
+                        class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+                      <span class="text-xs font-bold text-slate-900">Video Kelompok (Responsi)</span>
+                    </label>
+                    <span class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Ceklist Opsional</span>
+                  </div>
+                  <p class="text-[11px] text-slate-500">Centang jika terdapat karya/presentasi video kelompok pada responsi.</p>
+
+                  <div id="section-resp-vid-kel" class="${(respEntry.videoKelompok && respEntry.videoKelompok.aktif) ? '' : 'hidden'} space-y-2 pt-1 border-t border-slate-100">
+                    <div class="flex items-center justify-between">
+                      <label class="text-[11px] font-semibold text-slate-700">Pilih Predikat:</label>
+                      <span id="label-predikat-kel" class="text-[11px] font-bold text-[#36786a] font-mono">
+                        ${(respEntry.videoKelompok && respEntry.videoKelompok.predikat) || 'A'} (${(respEntry.videoKelompok && respEntry.videoKelompok.skor) || 95})
+                      </span>
+                    </div>
+                    <div class="grid grid-cols-5 gap-1.5 text-center">
+                      ${['A', 'B', 'C', 'D', 'E'].map(p => {
+                        const curPred = (respEntry.videoKelompok && respEntry.videoKelompok.predikat) || 'A';
+                        const isSel = curPred === p;
+                        return `
+                          <button type="button" onclick="selectRespPredikat('kel', '${p}')" 
+                            id="btn-pred-kel-${p}" 
+                            class="py-1 px-2 rounded-lg border text-xs font-bold transition ${isSel ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}">
+                            ${p}
+                          </button>
+                        `;
+                      }).join('')}
+                    </div>
+                    <input type="hidden" id="val-resp-vid-kel-pred" value="${(respEntry.videoKelompok && respEntry.videoKelompok.predikat) || 'A'}">
+                    <div class="flex items-center justify-between pt-1 text-[11px] text-slate-600">
+                      <span>Skor Angka Video Kelompok:</span>
+                      <input type="number" min="0" max="100" id="val-resp-vid-kel-skor" 
+                        value="${(respEntry.videoKelompok && respEntry.videoKelompok.skor != null) ? respEntry.videoKelompok.skor : 95}" 
+                        oninput="updateLiveResponsiTotal()" 
+                        class="w-16 py-0.5 px-1.5 text-right font-mono font-bold rounded border border-slate-300 text-xs">
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- BAGIAN C: CATATAN EVALUASI & TOMBOL SIMPAN -->
+            <div class="space-y-3 pt-1">
+              <div>
+                <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan Responsi & Rekomendasi</label>
+                <textarea id="catatan-responsi" rows="2" placeholder="Catatan kedalaman konsep materi, daya nalar, dan performa video responsi..." 
+                  class="w-full p-2.5 rounded-lg border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">${escapeHtml(respEntry.catatan || '')}</textarea>
+              </div>
+
+              <div class="flex items-center justify-between pt-1">
+                <span class="text-[11px] text-slate-500">Nilai responsi langsung tersimpan untuk praktikan ini di seluruh kegiatan praktikum.</span>
+                <button type="button" onclick="saveOnlyResponsi('${escapeHtml(selectedNim)}')" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-bold py-2 px-4 rounded-xl shadow-sm text-xs transition flex items-center space-x-1.5">
+                  <i data-lucide="check" class="w-4 h-4"></i>
+                  <span>Simpan Nilai Responsi Praktikan</span>
+                </button>
+              </div>
             </div>
           </div>
 
-          <!-- SUB-TAB 7: K3 & KEDISIPLINAN -->
+          <!-- SUB-TAB 7: PENILAIAN KEDISIPLINAN -->
           <div id="subtab-content-tab-k3" class="space-y-4 hidden">
             <div class="flex items-center justify-between pb-3 border-b border-slate-200">
               <div>
-                <h4 class="font-title text-base font-bold text-slate-900">Penilaian Kedisiplinan & Keselamatan Kerja (K3)</h4>
-                <p class="text-xs text-slate-500">7 Indikator keselamatan kerja lab, batas waktu, etika akademik.</p>
+                <h4 class="font-title text-base font-bold text-slate-900">Penilaian Kedisiplinan</h4>
+                <p class="text-xs text-slate-500">Indikator ketepatan waktu pengumpulan tugas dan kontribusi kerja praktikan.</p>
               </div>
               <div class="text-right">
-                <span class="text-xs text-slate-500">Skor K3:</span>
+                <span class="text-xs text-slate-500">Skor Kedisiplinan:</span>
                 <div id="live-k3-total" class="text-2xl font-bold font-mono text-[#56b29d]">${currentK3Total}</div>
               </div>
             </div>
@@ -1752,7 +1967,7 @@ function renderInputNilaiCoAssView() {
                   <div class="w-20 shrink-0">
                     <input type="number" min="0" max="100" step="1" 
                       id="input-k3-${ind.id}" 
-                      value="${k3Entry.scores[ind.id] !== undefined ? k3Entry.scores[ind.id] : 95}"
+                      value="${(k3Entry.scores && k3Entry.scores[ind.id] !== undefined) ? k3Entry.scores[ind.id] : 95}"
                       oninput="updateLiveK3Total()"
                       class="w-full text-right font-mono font-bold py-1 px-1.5 rounded border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">
                   </div>
@@ -1761,8 +1976,8 @@ function renderInputNilaiCoAssView() {
             </div>
 
             <div>
-              <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan K3 & Etika</label>
-              <textarea id="catatan-k3" rows="2" placeholder="Catatan APD, kejujuran data laboratorium..." 
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan Kedisiplinan</label>
+              <textarea id="catatan-k3" rows="2" placeholder="Catatan ketepatan waktu, kontribusi kerja, dan kepatuhan tata tertib..." 
                 class="w-full p-2.5 rounded-lg border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">${escapeHtml(k3Entry.catatan || '')}</textarea>
             </div>
           </div>
@@ -1907,6 +2122,10 @@ function renderDetailPraktikanView() {
                 `).join('')}
               </select>
             ` : ''}
+            <button onclick="exportSingleStudentExcel('${escapeHtml(nim)}')" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-2 px-3.5 rounded-lg flex items-center space-x-1.5 transition shadow-sm no-print" title="Unduh KHP Pribadi dalam format Excel">
+              <i data-lucide="file-spreadsheet" class="w-4 h-4"></i>
+              <span>Unduh Excel</span>
+            </button>
             <button onclick="window.print()" class="bg-[#56b29d] hover:bg-[#469c88] text-white text-xs font-semibold py-2 px-3.5 rounded-lg flex items-center space-x-1.5 transition shadow-sm">
               <i data-lucide="printer" class="w-4 h-4"></i>
               <span>Cetak KHP</span>
@@ -1980,7 +2199,7 @@ function renderDetailPraktikanView() {
                 <td class="p-2.5 text-right font-bold text-slate-900">${(s.scoreSikap * s.effectiveWeights.sikap / 100).toFixed(2)}</td>
               </tr>
               <tr>
-                <td class="p-2.5 font-medium text-slate-800">5. Responsi Pemahaman Teori & Prosedur</td>
+                <td class="p-2.5 font-medium text-slate-800">5. Responsi Pemahaman Teori & Video (Mandiri)</td>
                 <td class="p-2.5 text-center">${s.baseWeights.responsi}%</td>
                 <td class="p-2.5 text-center font-bold text-[#56b29d]">${s.effectiveWeights.responsi}%</td>
                 <td class="p-2.5 text-right">${s.scoreResponsi.toFixed(2)}</td>
@@ -1994,7 +2213,7 @@ function renderDetailPraktikanView() {
                 <td class="p-2.5 text-right font-bold text-slate-900">${(s.scoreFormat * s.effectiveWeights.formatLaporan / 100).toFixed(2)}</td>
               </tr>
               <tr>
-                <td class="p-2.5 font-medium text-slate-800">7. Kedisiplinan & Keselamatan Kerja (K3)</td>
+                <td class="p-2.5 font-medium text-slate-800">7. Penilaian Kedisiplinan</td>
                 <td class="p-2.5 text-center">${s.baseWeights.k3Kedisiplinan}%</td>
                 <td class="p-2.5 text-center font-bold text-[#56b29d]">${s.effectiveWeights.k3Kedisiplinan}%</td>
                 <td class="p-2.5 text-right">${s.scoreK3.toFixed(2)}</td>
@@ -2048,9 +2267,9 @@ function renderDetailPraktikanView() {
         </div>
       </div>
 
-      <!-- Tabel 3: Rincian Indikator Performa, Sikap, dan K3 -->
+      <!-- Tabel 3: Rincian Indikator Performa, Sikap, Responsi & Kedisiplinan -->
       <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <h3 class="font-bold text-slate-900 text-base border-b border-slate-200 pb-2">III. Rincian Indikator Performa, Sikap & K3 Teramati</h3>
+        <h3 class="font-bold text-slate-900 text-base border-b border-slate-200 pb-2">III. Rincian Indikator Performa, Sikap, Responsi & Kedisiplinan</h3>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
           <!-- Kolom Kiri: Performa Praktikan -->
           <div class="border border-slate-200 rounded-lg p-3 space-y-2 bg-slate-50/50">
@@ -2063,11 +2282,8 @@ function renderDetailPraktikanView() {
                 </div>
               `).join('')}
             </div>
-          </div>
 
-          <!-- Kolom Kanan: Sikap Belajar & K3 -->
-          <div class="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50/50">
-            <div>
+            <div class="pt-3 border-t border-slate-200">
               <span class="font-bold text-slate-800 block text-xs mb-1">2. Kemauan & Sikap Belajar</span>
               <div class="space-y-1">
                 ${INDIKATOR_SIKAP.map(ind => `
@@ -2078,9 +2294,12 @@ function renderDetailPraktikanView() {
                 `).join('')}
               </div>
             </div>
+          </div>
 
+          <!-- Kolom Kanan: Kedisiplinan & Responsi -->
+          <div class="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50/50">
             <div>
-              <span class="font-bold text-slate-800 block text-xs mb-1">3. Kedisiplinan & Keselamatan Kerja (K3)</span>
+              <span class="font-bold text-slate-800 block text-xs mb-1">3. Penilaian Kedisiplinan</span>
               <div class="space-y-1">
                 ${INDIKATOR_K3.map(ind => `
                   <div class="flex items-center justify-between py-1 border-b border-slate-100">
@@ -2088,6 +2307,29 @@ function renderDetailPraktikanView() {
                     <span class="font-bold text-slate-900 ml-2">${(AppState.grades.k3Kedisiplinan && AppState.grades.k3Kedisiplinan[nim] && AppState.grades.k3Kedisiplinan[nim].scores && AppState.grades.k3Kedisiplinan[nim].scores[ind.id]) ? AppState.grades.k3Kedisiplinan[nim].scores[ind.id] : '-'}</span>
                   </div>
                 `).join('')}
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-slate-200">
+              <div class="flex items-center justify-between mb-1">
+                <span class="font-bold text-slate-800 text-xs">4. Penilaian Responsi (Mandiri)</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-emerald-100 text-emerald-800">
+                  ${(AppState.grades.responsi && AppState.grades.responsi[nim] && AppState.grades.responsi[nim].predikatAkhir) ? `Predikat ${AppState.grades.responsi[nim].predikatAkhir}` : `Skor ${s.scoreResponsi.toFixed(1)}`}
+                </span>
+              </div>
+              <div class="space-y-1 text-[11px]">
+                <div class="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span class="text-slate-700">Video Individu (Responsi)</span>
+                  <span class="font-bold ${(AppState.grades.responsi && AppState.grades.responsi[nim] && AppState.grades.responsi[nim].videoIndividu && AppState.grades.responsi[nim].videoIndividu.aktif) ? 'text-emerald-700' : 'text-slate-400'}">
+                    ${(AppState.grades.responsi && AppState.grades.responsi[nim] && AppState.grades.responsi[nim].videoIndividu && AppState.grades.responsi[nim].videoIndividu.aktif) ? `Predikat ${AppState.grades.responsi[nim].videoIndividu.predikat} (${AppState.grades.responsi[nim].videoIndividu.skor || 95})` : 'N/A (Tidak Ada)'}
+                  </span>
+                </div>
+                <div class="flex items-center justify-between py-1 border-b border-slate-100">
+                  <span class="text-slate-700">Video Kelompok (Responsi)</span>
+                  <span class="font-bold ${(AppState.grades.responsi && AppState.grades.responsi[nim] && AppState.grades.responsi[nim].videoKelompok && AppState.grades.responsi[nim].videoKelompok.aktif) ? 'text-emerald-700' : 'text-slate-400'}">
+                    ${(AppState.grades.responsi && AppState.grades.responsi[nim] && AppState.grades.responsi[nim].videoKelompok && AppState.grades.responsi[nim].videoKelompok.aktif) ? `Predikat ${AppState.grades.responsi[nim].videoKelompok.predikat} (${AppState.grades.responsi[nim].videoKelompok.skor || 95})` : 'N/A (Tidak Ada)'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -2579,7 +2821,7 @@ function renderPengaturanView() {
                         <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Sik: ${pw.sikap ?? 10}%</span>
                         <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Resp: ${pw.responsi ?? 20}%</span>
                         <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Fmt: ${pw.formatLaporan ?? 5}%</span>
-                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">K3: ${pw.k3Kedisiplinan ?? 5}%</span>
+                        <span class="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-medium">Disiplin: ${pw.k3Kedisiplinan ?? 5}%</span>
                       </div>
                     </td>
                     <td class="p-2.5 text-center">
@@ -2920,6 +3162,9 @@ function confirmImportPraktikan() {
  * 12. MODAL & FORM MANAJEMEN CO.ASS / PRAKTIKAN
  */
 function renderModals() {
+  if (document.getElementById('modal-container')) {
+    return '';
+  }
   return `
     <div id="modal-container" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
       <div id="modal-content" class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-lg w-full max-h-[90vh] overflow-y-auto p-6">
@@ -3599,7 +3844,7 @@ function openModalBuatPraktikum(prakId = null) {
               <input type="number" min="0" max="100" id="modal-weight-format" value="${initialWeights.formatLaporan ?? 5}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
             </div>
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">K3</label>
+              <label class="block text-[11px] font-semibold text-slate-600 mb-0.5">Kedisiplinan</label>
               <input type="number" min="0" max="100" id="modal-weight-k3" value="${initialWeights.k3Kedisiplinan ?? 5}" oninput="calculateModalTotalWeight()" class="w-full text-center py-1 rounded border border-slate-300 font-mono font-bold">
             </div>
           </div>
@@ -4240,20 +4485,13 @@ function saveCurrentGradingForm(nim, acaraId) {
     catatan: fmtCatatan
   };
 
-  // 6. Simpan Responsi
-  const respScores = {};
-  INDIKATOR_RESPONSI.forEach(ind => {
-    const el = document.getElementById(`input-resp-${ind.id}`);
-    respScores[ind.id] = el ? parseFloat(el.value) || 0 : 0;
-  });
-  const respCatatan = document.getElementById('catatan-responsi') ? document.getElementById('catatan-responsi').value : '';
-  AppState.grades.responsi[nim] = {
-    scores: respScores,
-    total: calculateResponsiScore(respScores),
-    catatan: respCatatan
-  };
+  // 6. Simpan Responsi (Mandiri & Terpisah, Tersinkron Global)
+  const respData = getResponsiFormData();
+  AppState.grades.responsi[nim] = respData;
+  if (!AppState.globalResponsi) AppState.globalResponsi = {};
+  AppState.globalResponsi[nim] = respData;
 
-  // 7. Simpan K3
+  // 7. Simpan Penilaian Kedisiplinan
   const k3Scores = {};
   INDIKATOR_K3.forEach(ind => {
     const el = document.getElementById(`input-k3-${ind.id}`);
@@ -4371,15 +4609,122 @@ function updateLiveFormatTotal() {
   if (target) target.innerText = total;
 }
 
-function updateLiveResponsiTotal() {
-  const scores = {};
+function getResponsiFormData() {
+  const respScores = {};
   INDIKATOR_RESPONSI.forEach(ind => {
     const el = document.getElementById(`input-resp-${ind.id}`);
-    scores[ind.id] = el ? parseFloat(el.value) || 0 : 0;
+    respScores[ind.id] = el ? parseFloat(el.value) || 0 : 0;
   });
-  const total = calculateResponsiScore(scores);
+
+  const checkInd = document.getElementById('check-resp-vid-ind');
+  const isIndAktif = checkInd ? checkInd.checked : false;
+  const indPredEl = document.getElementById('val-resp-vid-ind-pred');
+  const indPred = indPredEl ? indPredEl.value : 'A';
+  const indSkorEl = document.getElementById('val-resp-vid-ind-skor');
+  const indSkor = indSkorEl ? parseFloat(indSkorEl.value) || 95 : 95;
+
+  const checkKel = document.getElementById('check-resp-vid-kel');
+  const isKelAktif = checkKel ? checkKel.checked : false;
+  const kelPredEl = document.getElementById('val-resp-vid-kel-pred');
+  const kelPred = kelPredEl ? kelPredEl.value : 'A';
+  const kelSkorEl = document.getElementById('val-resp-vid-kel-skor');
+  const kelSkor = kelSkorEl ? parseFloat(kelSkorEl.value) || 95 : 95;
+
+  const respCatatan = document.getElementById('catatan-responsi') ? document.getElementById('catatan-responsi').value : '';
+
+  const respObj = {
+    scores: respScores,
+    videoIndividu: {
+      aktif: isIndAktif,
+      predikat: indPred,
+      skor: indSkor
+    },
+    videoKelompok: {
+      aktif: isKelAktif,
+      predikat: kelPred,
+      skor: kelSkor
+    },
+    catatan: respCatatan
+  };
+
+  const total = calculateResponsiScore(respObj);
+  const predInfo = getPredikatResponsi(total);
+  respObj.total = total;
+  respObj.predikatAkhir = predInfo.predikat;
+
+  return respObj;
+}
+
+function toggleRespVideoSection(type, isChecked) {
+  const sec = document.getElementById(`section-resp-vid-${type}`);
+  if (sec) {
+    if (isChecked) {
+      sec.classList.remove('hidden');
+    } else {
+      sec.classList.add('hidden');
+    }
+  }
+  updateLiveResponsiTotal();
+}
+
+function selectRespPredikat(type, predikat) {
+  const scoreMap = { 'A': 95, 'B': 85, 'C': 75, 'D': 65, 'E': 50 };
+  const hiddenInput = document.getElementById(`val-resp-vid-${type}-pred`);
+  if (hiddenInput) hiddenInput.value = predikat;
+
+  const scoreInput = document.getElementById(`val-resp-vid-${type}-skor`);
+  if (scoreInput) scoreInput.value = scoreMap[predikat] || 95;
+
+  const labelEl = document.getElementById(`label-predikat-${type}`);
+  if (labelEl) {
+    labelEl.innerText = `${predikat} (${scoreMap[predikat] || 95})`;
+  }
+
+  ['A', 'B', 'C', 'D', 'E'].forEach(p => {
+    const btn = document.getElementById(`btn-pred-${type}-${p}`);
+    if (btn) {
+      if (p === predikat) {
+        btn.className = 'py-1 px-2 rounded-lg border text-xs font-bold transition bg-emerald-600 text-white border-emerald-600 shadow-sm';
+      } else {
+        btn.className = 'py-1 px-2 rounded-lg border text-xs font-bold transition bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200';
+      }
+    }
+  });
+
+  updateLiveResponsiTotal();
+}
+
+function updateLiveResponsiTotal() {
+  const data = getResponsiFormData();
   const target = document.getElementById('live-responsi-total');
-  if (target) target.innerText = total;
+  if (target) target.innerText = data.total;
+
+  const badge = document.getElementById('live-responsi-predikat-badge');
+  if (badge) {
+    badge.innerText = data.predikatAkhir;
+  }
+
+  const btnSub = document.getElementById('btn-sub-responsi');
+  if (btnSub) {
+    const span = btnSub.querySelector('span');
+    if (span) span.innerText = `6. Responsi (${data.total})`;
+  }
+}
+
+function saveOnlyResponsi(nim) {
+  const targetNim = nim || AppState.selectedPraktikanNIM;
+  if (!targetNim) return;
+
+  const respData = getResponsiFormData();
+  AppState.grades.responsi[targetNim] = respData;
+  if (!AppState.globalResponsi) AppState.globalResponsi = {};
+  AppState.globalResponsi[targetNim] = respData;
+
+  saveCurrentPraktikumState();
+  saveStateToStorage();
+  updateLiveResponsiTotal();
+  showToast(`Nilai Responsi NIM ${targetNim} (Skor: ${respData.total}, Predikat: ${respData.predikatAkhir}) berhasil disimpan tersendiri!`, 'success');
+  syncWithGoogleSheets(false);
 }
 
 function updateLiveK3Total() {
@@ -4391,6 +4736,12 @@ function updateLiveK3Total() {
   const total = calculateK3Score(scores);
   const target = document.getElementById('live-k3-total');
   if (target) target.innerText = total;
+
+  const btnSub = document.getElementById('btn-sub-k3');
+  if (btnSub) {
+    const span = btnSub.querySelector('span');
+    if (span) span.innerText = `7. Kedisiplinan (${total})`;
+  }
 }
 
 function toggleVideoNA(isNA) {
@@ -4489,11 +4840,93 @@ function filterRekapTable() {
 }
 
 /**
- * 14. EXPORT TO MICROSOFT EXCEL (.XLSX) MULTI-SHEET LENGKAP
+ * 14. EXPORT TO MICROSOFT EXCEL (.XLSX) MULTI-SHEET LENGKAP & KHP PRAKTIKAN
  */
+function exportSingleStudentExcel(nim) {
+  if (typeof XLSX === 'undefined') {
+    alert('Modul Excel (SheetJS) sedang dimuat. Silakan coba sesaat lagi.');
+    return;
+  }
+  const targetNim = nim || (AppState.currentUser && AppState.currentUser.data && AppState.currentUser.data.nim) || AppState.selectedPraktikanNIM;
+  const s = getPraktikanCompleteSummary(targetNim);
+  if (!s) {
+    alert('Data praktikan tidak ditemukan.');
+    return;
+  }
+  const curPrak = getActivePraktikum();
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Kartu Hasil Praktikum (KHP) Pribadi Mahasiswa
+  const respData = (AppState.grades.responsi && AppState.grades.responsi[targetNim]) || (AppState.globalResponsi && AppState.globalResponsi[targetNim]) || {};
+  const khpData = [
+    { "KETERANGAN": "INSTITUT PERTANIAN STIPER (INSTIPER) YOGYAKARTA", "DETAIL": "" },
+    { "KETERANGAN": "KARTU HASIL PRAKTIKUM (KHP) RESMI", "DETAIL": "" },
+    { "KETERANGAN": "----------------------------------------------------", "DETAIL": "----------------------------------------------------" },
+    { "KETERANGAN": "Nama Praktikan", "DETAIL": s.nama },
+    { "KETERANGAN": "NIM", "DETAIL": s.nim },
+    { "KETERANGAN": "Kelompok", "DETAIL": s.kelompok },
+    { "KETERANGAN": "Praktikum", "DETAIL": curPrak.nama },
+    { "KETERANGAN": "Tahun Akademik / Semester", "DETAIL": `${curPrak.tahunAkademik || '2026/2027'} - ${curPrak.semester || 'Gasal'}` },
+    { "KETERANGAN": "Co.Ass Penilai / Pembimbing", "DETAIL": s.coassNama },
+    { "KETERANGAN": "----------------------------------------------------", "DETAIL": "----------------------------------------------------" },
+    { "KETERANGAN": "I. REKAPITULASI KOMPOSISI PENILAIAN", "DETAIL": "" },
+    { "KETERANGAN": `1. Rata-rata Laporan Praktikum (${s.effectiveWeights.laporan}%)`, "DETAIL": s.avgLaporan },
+    { "KETERANGAN": `2. Rata-rata Video Praktikum (${s.effectiveWeights.video}%)`, "DETAIL": s.isVideoComponentNA ? "N/A" : s.avgVideo },
+    { "KETERANGAN": `3. Performa & Keterampilan Praktikum (${s.effectiveWeights.performa}%)`, "DETAIL": s.scorePerforma },
+    { "KETERANGAN": `4. Kemauan & Sikap Belajar (${s.effectiveWeights.sikap}%)`, "DETAIL": s.scoreSikap },
+    { "KETERANGAN": `5. Format Laporan Teknis (${s.effectiveWeights.formatLaporan}%)`, "DETAIL": s.scoreFormat },
+    { "KETERANGAN": `6. Responsi Pemahaman Materi (${s.effectiveWeights.responsi}%)`, "DETAIL": s.scoreResponsi },
+    { "KETERANGAN": `   - Predikat Responsi Akhir`, "DETAIL": respData.predikatAkhir ? `Predikat ${respData.predikatAkhir}` : getPredikatResponsi(s.scoreResponsi).predikat },
+    { "KETERANGAN": `   - Video Individu (Responsi)`, "DETAIL": (respData.videoIndividu && respData.videoIndividu.aktif) ? `Predikat ${respData.videoIndividu.predikat} (${respData.videoIndividu.skor || 95})` : 'N/A' },
+    { "KETERANGAN": `   - Video Kelompok (Responsi)`, "DETAIL": (respData.videoKelompok && respData.videoKelompok.aktif) ? `Predikat ${respData.videoKelompok.predikat} (${respData.videoKelompok.skor || 95})` : 'N/A' },
+    { "KETERANGAN": `7. Penilaian Kedisiplinan (${s.effectiveWeights.k3Kedisiplinan}%)`, "DETAIL": s.scoreK3 },
+    { "KETERANGAN": "----------------------------------------------------", "DETAIL": "----------------------------------------------------" },
+    { "KETERANGAN": "II. HASIL AKHIR & KELULUSAN", "DETAIL": "" },
+    { "KETERANGAN": "NILAI AKHIR PRAKTIKUM (0 - 100)", "DETAIL": s.nilaiAkhir },
+    { "KETERANGAN": "PREDIKAT (GRADE)", "DETAIL": s.grade },
+    { "KETERANGAN": "KETERANGAN PREDIKAT", "DETAIL": s.gradeLabel },
+    { "KETERANGAN": "STATUS KELULUSAN", "DETAIL": s.statusLulus },
+    { "KETERANGAN": "PRESENSI KEHADIRAN", "DETAIL": s.persenKehadiran + "%" }
+  ];
+
+  const wsKhp = XLSX.utils.json_to_sheet(khpData);
+  XLSX.utils.book_append_sheet(wb, wsKhp, "KHP Resmi");
+
+  // Sheet 2: Rincian Acara Praktikan
+  const acaraRows = AppState.acaraList.map((ac, idx) => {
+    const lapEntry = (AppState.grades.laporan[targetNim] && AppState.grades.laporan[targetNim][ac.id]) || null;
+    const lapScore = lapEntry ? calculateLaporanScore(lapEntry.scores) : 0;
+    const vidEntry = (AppState.grades.video[targetNim] && AppState.grades.video[targetNim][ac.id]) || null;
+    const isNA = !ac.wajibVideo || (vidEntry && vidEntry.isNA);
+    const vidScore = vidEntry ? calculateVideoScore(vidEntry.scores, isNA) : { score: 0, isNA };
+
+    return {
+      "No": idx + 1,
+      "Acara": ac.nama,
+      "Nilai Laporan": lapScore,
+      "Catatan Laporan": lapEntry ? lapEntry.catatan || "-" : "-",
+      "Nilai Video": isNA ? "N/A" : vidScore.score,
+      "Catatan Video": vidEntry ? vidEntry.catatan || "-" : "-"
+    };
+  });
+  const wsAcara = XLSX.utils.json_to_sheet(acaraRows);
+  XLSX.utils.book_append_sheet(wb, wsAcara, "Rincian Nilai Acara");
+
+  const safeName = s.nama.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filename = `KHP_${s.nim}_${safeName}.xlsx`;
+  XLSX.writeFile(wb, filename);
+  showToast(`KHP Excel praktikan NIM ${s.nim} berhasil diunduh!`, 'success');
+}
+
 function exportToExcel() {
   if (typeof XLSX === 'undefined') {
     alert('Modul Excel (SheetJS) sedang dimuat. Silakan coba sesaat lagi.');
+    return;
+  }
+
+  // Jika yang login adalah Praktikan, ekspor hanya KHP milik dia sendiri
+  if (AppState.currentUser && AppState.currentUser.role === 'praktikan') {
+    exportSingleStudentExcel(AppState.currentUser.data.nim);
     return;
   }
 
@@ -4508,13 +4941,13 @@ function exportToExcel() {
       "Nama Praktikan": s.nama,
       "Kelompok": s.kelompok,
       "Co.Ass Penilai": s.coassNama,
-      "Laporan (35%)": s.avgLaporan,
-      "Video (10%)": s.isVideoComponentNA ? "N/A" : s.avgVideo,
-      "Performa (15%)": s.scorePerforma,
-      "Sikap Belajar (10%)": s.scoreSikap,
-      "Responsi (20%)": s.scoreResponsi,
-      "Format Laporan (5%)": s.scoreFormat,
-      "K3 & Disiplin (5%)": s.scoreK3,
+      [`Laporan (${s.effectiveWeights.laporan}%)`]: s.avgLaporan,
+      [`Video (${s.effectiveWeights.video}%)`]: s.isVideoComponentNA ? "N/A" : s.avgVideo,
+      [`Performa (${s.effectiveWeights.performa}%)`]: s.scorePerforma,
+      [`Sikap Belajar (${s.effectiveWeights.sikap}%)`]: s.scoreSikap,
+      [`Responsi (${s.effectiveWeights.responsi}%)`]: s.scoreResponsi,
+      [`Format Laporan (${s.effectiveWeights.formatLaporan}%)`]: s.scoreFormat,
+      [`Penilaian Kedisiplinan (${s.effectiveWeights.k3Kedisiplinan}%)`]: s.scoreK3,
       "NILAI AKHIR": s.nilaiAkhir,
       "GRADE": s.grade,
       "PREDIKAT": s.gradeLabel,
@@ -4560,18 +4993,22 @@ function exportToExcel() {
   const wsVideo = XLSX.utils.json_to_sheet(videoRows);
   XLSX.utils.book_append_sheet(wb, wsVideo, "Nilai Video Per Acara");
 
-  // Sheet 4: Performa dan Sikap
+  // Sheet 4: Performa, Sikap & Kedisiplinan
   const detailRows = AppState.praktikanList.map((p, idx) => {
     const s = getPraktikanCompleteSummary(p.nim);
+    const respData = (AppState.grades.responsi && AppState.grades.responsi[p.nim]) || (AppState.globalResponsi && AppState.globalResponsi[p.nim]) || {};
     return {
       "No": idx + 1,
       "NIM": p.nim,
       "Nama": p.nama,
-      "Performa (12 Indikator)": s.scorePerforma,
-      "Sikap (8 Indikator)": s.scoreSikap,
-      "Format (10 Indikator)": s.scoreFormat,
-      "Responsi (8 Indikator)": s.scoreResponsi,
-      "K3 & Disiplin (7 Indikator)": s.scoreK3
+      "Performa (Keterampilan)": s.scorePerforma,
+      "Sikap Belajar": s.scoreSikap,
+      "Format Laporan": s.scoreFormat,
+      "Skor Responsi": s.scoreResponsi,
+      "Predikat Responsi": respData.predikatAkhir || getPredikatResponsi(s.scoreResponsi).predikat,
+      "Video Individu (Responsi)": (respData.videoIndividu && respData.videoIndividu.aktif) ? `Predikat ${respData.videoIndividu.predikat}` : "N/A",
+      "Video Kelompok (Responsi)": (respData.videoKelompok && respData.videoKelompok.aktif) ? `Predikat ${respData.videoKelompok.predikat}` : "N/A",
+      "Penilaian Kedisiplinan": s.scoreK3
     };
   });
   const wsDetail = XLSX.utils.json_to_sheet(detailRows);
@@ -4681,7 +5118,8 @@ async function syncWithGoogleSheets(isManual = false) {
         acara: AppState.acaraList,
         rekap: rekapList,
         grades: AppState.grades,
-        praktikumList: AppState.praktikumList
+        praktikumList: AppState.praktikumList,
+        globalResponsi: AppState.globalResponsi || {}
       }
     };
 
@@ -4699,7 +5137,9 @@ async function syncWithGoogleSheets(isManual = false) {
       if (isManual) {
         alert('BERHASIL! 🎉\n\nSeluruh data praktikum (Co.Ass, praktikan, acara, dan rekapitulasi nilai) telah berhasil dikirim dan tersimpan di Google Drive (juzantiara@gmail.com).\n\nSilakan cek file Google Spreadsheet di Google Drive Anda untuk melihat pembaharuan data.');
       }
-      renderApp();
+      if (!isAnyModalOpen()) {
+        renderApp();
+      }
     } else {
       throw new Error(json.message || 'Respon server tidak valid');
     }
@@ -4746,11 +5186,31 @@ async function pullFromGoogleSheets(isManual = true) {
       if (json.data.praktikumList && json.data.praktikumList.length > 0) {
         AppState.praktikumList = json.data.praktikumList;
       }
+      if (json.data.globalResponsi) {
+        AppState.globalResponsi = Object.assign({}, AppState.globalResponsi || {}, json.data.globalResponsi);
+      }
+      if (AppState.globalResponsi && AppState.grades) {
+        if (!AppState.grades.responsi) AppState.grades.responsi = {};
+        Object.keys(AppState.globalResponsi).forEach(nim => {
+          AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
+        });
+      }
+      if (json.data.globalResponsi) {
+        AppState.globalResponsi = Object.assign({}, AppState.globalResponsi || {}, json.data.globalResponsi);
+      }
+      if (AppState.globalResponsi && AppState.grades) {
+        if (!AppState.grades.responsi) AppState.grades.responsi = {};
+        Object.keys(AppState.globalResponsi).forEach(nim => {
+          AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
+        });
+      }
 
       AppState.syncStatus.online = true;
       AppState.syncStatus.lastSync = new Date().toLocaleTimeString();
       saveStateToStorage();
-      renderApp();
+      if (!isAnyModalOpen()) {
+        renderApp();
+      }
       if (isManual) {
         showToast('Data berhasil diperbarui langsung dari Google Drive!', 'success');
         alert('Data berhasil diperbarui! Seluruh data Co.Ass, praktikan, dan nilai dari Google Drive telah tersinkronkan.');
@@ -4791,10 +5251,21 @@ async function pullFromGoogleSheetsSilent(showToastNotice = false) {
       if (json.data.praktikumList && json.data.praktikumList.length > 0) {
         AppState.praktikumList = json.data.praktikumList;
       }
+      if (json.data.globalResponsi) {
+        AppState.globalResponsi = Object.assign({}, AppState.globalResponsi || {}, json.data.globalResponsi);
+      }
+      if (AppState.globalResponsi && AppState.grades) {
+        if (!AppState.grades.responsi) AppState.grades.responsi = {};
+        Object.keys(AppState.globalResponsi).forEach(nim => {
+          AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
+        });
+      }
       AppState.syncStatus.online = true;
       AppState.syncStatus.lastSync = new Date().toLocaleTimeString();
       saveStateToStorage();
-      renderApp();
+      if (!isAnyModalOpen()) {
+        renderApp();
+      }
       if (showToastNotice) {
         showToast('Data Co.Ass & Praktikan berhasil disinkronkan dari Google Drive!', 'success');
       }

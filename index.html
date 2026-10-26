@@ -130,9 +130,15 @@
     </div>
   </div>
 
-  <!-- Skrip Data Awal & Logika Aplikasi (Cache-busted v2.3.0) -->
-  <script src="logo-base64.js?v=2.3.0"></script>
-  <script src="data-seed.js?v=2.3.0"></script>
-  <script src="app.js?v=2.3.0"></script>
+  <!-- Container Modal Dialog Terpisah (Tidak tertimpa oleh renderApp ataupun background auto-sync) -->
+  <div id="modal-container" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div id="modal-content" class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-lg w-full max-h-[90vh] overflow-y-auto p-6">
+    </div>
+  </div>
+
+  <!-- Skrip Data Awal & Logika Aplikasi (Cache-busted v2.5.0) -->
+  <script src="logo-base64.js?v=2.5.0"></script>
+  <script src="data-seed.js?v=2.5.0"></script>
+  <script src="app.js?v=2.5.0"></script>
 </body>
 </html>
