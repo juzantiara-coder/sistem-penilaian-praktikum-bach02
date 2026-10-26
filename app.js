@@ -205,22 +205,29 @@ function initAppState() {
   if (savedState) {
     try {
       const parsed = JSON.parse(savedState);
-      AppState.config = parsed.config || DEFAULT_CONFIG;
+      AppState.config = Object.assign({}, DEFAULT_CONFIG, parsed.config || {});
       if (!AppState.config.googleAppsScriptUrl && DEFAULT_CONFIG.googleAppsScriptUrl) {
         AppState.config.googleAppsScriptUrl = DEFAULT_CONFIG.googleAppsScriptUrl;
       }
       AppState.config.institution = "INSTITUT PERTANIAN STIPER (INSTIPER) YOGYAKARTA";
-      AppState.koordinatorList = parsed.koordinatorList || DEFAULT_KOORDINATOR;
-      AppState.coassList = sanitizeCoAssList(parsed.coassList || DEFAULT_COASS);
+      
+      // Sinkronisasi Akun Koordinator / Dospem
+      AppState.koordinatorList = (parsed.koordinatorList && parsed.koordinatorList.length > 0)
+        ? parsed.koordinatorList
+        : JSON.parse(JSON.stringify(DEFAULT_KOORDINATOR));
 
-      // Auto-sinkron Co.Ass jika masih ada data dummy lama (Ahmad Fauzi / Siti Rahmawati) atau Co.Ass asli belum lengkap
+      DEFAULT_KOORDINATOR.forEach(dk => {
+        if (!AppState.koordinatorList.some(k => k.username.toLowerCase() === dk.username.toLowerCase())) {
+          AppState.koordinatorList.push(JSON.parse(JSON.stringify(dk)));
+        }
+      });
+
+      // Data Co.Ass: JANGAN PERNAH mereset hanya karena jumlah < 4 agar Co.Ass yang dihapus tidak muncul lagi!
+      AppState.coassList = sanitizeCoAssList((parsed.coassList && parsed.coassList.length > 0) ? parsed.coassList : DEFAULT_COASS);
       const hasOldDummyCoAss = AppState.coassList.some(c => 
         c.nama.includes('Ahmad Fauzi') || c.nama.includes('Siti Rahmawati') || c.kodeLogin === 'COASS-FAUZI-02'
       );
-      const hasRealCoAss = AppState.coassList.some(c => 
-        c.kodeLogin === 'COASS-7WRV-2' || c.nama.includes('Ismail Qori')
-      );
-      if (hasOldDummyCoAss || !hasRealCoAss || AppState.coassList.length < 4) {
+      if (hasOldDummyCoAss) {
         AppState.coassList = JSON.parse(JSON.stringify(DEFAULT_COASS));
       }
 
@@ -346,18 +353,33 @@ function resetCoAssToMaster() {
 /**
  * 2. AUTENTIKASI MULTI-ROLE
  */
-function loginDeveloper(username, password) {
+async function loginDeveloper(username, password) {
   const cleanUser = (username || '').trim().toLowerCase();
   const cleanPass = (password || '').trim();
 
-  const accounts = (AppState.koordinatorList && AppState.koordinatorList.length > 0) 
+  let accounts = (AppState.koordinatorList && AppState.koordinatorList.length > 0) 
     ? AppState.koordinatorList 
     : DEFAULT_KOORDINATOR;
 
   // Cek apakah ada akun yang cocok username dan password
-  const matched = accounts.find(k => 
+  let matched = accounts.find(k => 
     k.username.toLowerCase() === cleanUser && k.password === cleanPass
   );
+
+  // Jika belum cocok dan Google Drive aktif, coba verifikasi akun terbaru dari cloud real-time!
+  if (!matched && AppState.config && AppState.config.googleAppsScriptUrl) {
+    try {
+      await pullFromGoogleSheetsSilent(false);
+      accounts = (AppState.koordinatorList && AppState.koordinatorList.length > 0) 
+        ? AppState.koordinatorList 
+        : DEFAULT_KOORDINATOR;
+      matched = accounts.find(k => 
+        k.username.toLowerCase() === cleanUser && k.password === cleanPass
+      );
+    } catch (e) {
+      console.warn("Gagal verifikasi cloud koordinator:", e);
+    }
+  }
 
   if (matched) {
     AppState.currentUser = {
@@ -383,12 +405,13 @@ function loginDeveloper(username, password) {
   // Fallback PIN master jika username dikosongkan atau sesuai PIN
   if (cleanPass === "gigikuPutih@354" || cleanPass === AppState.config.developerPin ||
       (cleanUser === "koordinator" && cleanPass === "gigikuPutih@354") ||
-      (cleanUser === "dospem" && cleanPass === "gigikuPutih@354")) {
+      (cleanUser === "dospem" && cleanPass === "gigikuPutih@354") ||
+      (cleanUser === "develob" && cleanPass === "gigikuPutih@354")) {
     AppState.currentUser = {
       role: 'developer',
       data: {
-        nama: 'Koordinator / Dospem',
-        roleJabatan: 'Koordinator',
+        nama: cleanUser === "dospem" ? 'Dosen Pembimbing' : 'Justiar Noer',
+        roleJabatan: cleanUser === "dospem" ? 'Dosen Pembimbing' : 'Koordinator',
         email: AppState.config.developerEmail
       }
     };
@@ -406,12 +429,28 @@ function loginDeveloper(username, password) {
   return false;
 }
 
-function loginCoAss(kodeLogin) {
+async function loginCoAss(kodeLogin) {
   const code = (kodeLogin || '').trim().toUpperCase();
+  if (!code) {
+    showToast('Silakan masukkan Kode Login Co.Ass!', 'warning');
+    return false;
+  }
   AppState.coassList = sanitizeCoAssList(AppState.coassList || []);
 
   let coass = AppState.coassList.find(c => c.kodeLogin.toUpperCase() === code);
   
+  // Jika belum ditemukan di memori lokal dan ada URL Google Drive, tarik data terbaru dari cloud real-time!
+  if (!coass && AppState.config && AppState.config.googleAppsScriptUrl) {
+    showToast('Memverifikasi kode Co.Ass ke Google Drive...', 'info');
+    try {
+      await pullFromGoogleSheetsSilent(false);
+      AppState.coassList = sanitizeCoAssList(AppState.coassList || []);
+      coass = AppState.coassList.find(c => c.kodeLogin.toUpperCase() === code);
+    } catch (e) {
+      console.warn("Gagal verifikasi cloud Co.Ass:", e);
+    }
+  }
+
   // Fallback ke DEFAULT_COASS jika belum ada di state lokal
   if (!coass && typeof DEFAULT_COASS !== 'undefined') {
     const foundDefault = DEFAULT_COASS.find(c => c.kodeLogin.toUpperCase() === code);
@@ -443,20 +482,39 @@ function loginCoAss(kodeLogin) {
   return false;
 }
 
-function loginPraktikan(nama, nim) {
+async function loginPraktikan(nama, nim) {
   const cleanNim = (nim || '').trim();
   const cleanNama = (nama || '').trim().toLowerCase();
+
+  if (!cleanNim) {
+    showToast('Silakan masukkan NIM praktikan!', 'warning');
+    return false;
+  }
 
   AppState.praktikanList = (AppState.praktikanList || []).map(normalizePraktikanItem);
 
   let praktikan = AppState.praktikanList.find(p => 
-    p.nim === cleanNim && (p.nama.toLowerCase().includes(cleanNama) || cleanNama.includes(p.nama.toLowerCase()))
+    p.nim === cleanNim && (cleanNama === '' || p.nama.toLowerCase().includes(cleanNama) || cleanNama.includes(p.nama.toLowerCase()))
   );
+
+  // Jika belum ditemukan di memori lokal dan ada URL Google Drive, tarik data terbaru dari cloud real-time!
+  if (!praktikan && AppState.config && AppState.config.googleAppsScriptUrl) {
+    showToast('Memverifikasi data praktikan ke Google Drive...', 'info');
+    try {
+      await pullFromGoogleSheetsSilent(false);
+      AppState.praktikanList = (AppState.praktikanList || []).map(normalizePraktikanItem);
+      praktikan = AppState.praktikanList.find(p => 
+        p.nim === cleanNim && (cleanNama === '' || p.nama.toLowerCase().includes(cleanNama) || cleanNama.includes(p.nama.toLowerCase()))
+      );
+    } catch (e) {
+      console.warn("Gagal verifikasi cloud praktikan:", e);
+    }
+  }
 
   // Fallback ke DEFAULT_PRAKTIKAN jika belum ada di state
   if (!praktikan && typeof DEFAULT_PRAKTIKAN !== 'undefined') {
     const foundDefault = DEFAULT_PRAKTIKAN.find(p => 
-      p.nim === cleanNim && (p.nama.toLowerCase().includes(cleanNama) || cleanNama.includes(p.nama.toLowerCase()))
+      p.nim === cleanNim && (cleanNama === '' || p.nama.toLowerCase().includes(cleanNama) || cleanNama.includes(p.nama.toLowerCase()))
     );
     if (foundDefault) {
       praktikan = normalizePraktikanItem(foundDefault, AppState.praktikanList.length);
@@ -808,10 +866,10 @@ function getPraktikanCompleteSummary(nim) {
   let hadirCount = 0, izinCount = 0, sakitCount = 0, alpaCount = 0, terlambatCount = 0;
 
   listKehadiran.forEach(k => {
-    if (k.status === 'Hadir') hadirCount++;
+    if (k.status === 'Hadir' || k.status === true) hadirCount++;
     else if (k.status === 'Izin') izinCount++;
     else if (k.status === 'Sakit') sakitCount++;
-    else if (k.status === 'Alpa' || k.status === 'Tanpa Keterangan') alpaCount++;
+    else if (k.status === 'Alpa' || k.status === 'Tanpa Keterangan' || k.status === 'Tidak Hadir' || k.status === false) alpaCount++;
     else if (k.status === 'Terlambat') { hadirCount++; terlambatCount++; }
   });
 
@@ -947,10 +1005,10 @@ function renderLoginSection() {
     helpNote = "Login Co.Ass: Gunakan Kode Login Khusus Anda yang diberikan Koordinator.";
   } else if (role === 'koordinator') {
     userLabel = "Username Koordinator / Dospem";
-    userPlaceholder = "koordinator atau dospem";
+    userPlaceholder = "Masukan Username Anda";
     passLabel = "Password / PIN";
-    passPlaceholder = "Masukan Password / PIN";
-    helpNote = "Login Koordinator / Dospem: Masukan Username & Password (Akun Default: koordinator / gigikuPutih@354)";
+    passPlaceholder = "Masukan Password / PIN Anda";
+    helpNote = "Login Koordinator / Dospem: Masukan Username & Password terdaftar Anda.";
   }
 
   return `
@@ -1050,19 +1108,19 @@ function setLoginRole(role) {
   renderApp();
 }
 
-function handleUnifiedLoginSubmit(e) {
+async function handleUnifiedLoginSubmit(e) {
   e.preventDefault();
   const userInput = document.getElementById('unified-login-user').value.trim();
   const passInput = document.getElementById('unified-login-pass').value.trim();
   const role = AppState.currentLoginRole || 'praktikan';
 
   if (role === 'praktikan') {
-    loginPraktikan(userInput, passInput);
+    await loginPraktikan(userInput, passInput);
   } else if (role === 'coass') {
     const code = passInput || userInput;
-    loginCoAss(code);
+    await loginCoAss(code);
   } else if (role === 'koordinator') {
-    loginDeveloper(userInput, passInput);
+    await loginDeveloper(userInput, passInput);
   }
 }
 
@@ -1302,6 +1360,19 @@ function renderRekapitulasiView() {
   const summaries = AppState.praktikanList.map(p => getPraktikanCompleteSummary(p.nim));
   const weights = AppState.config.weights;
 
+  // Daftar Kelompok Dinamis (sesuai jumlah kelompok praktikum, default s/d Kelompok 8)
+  const curPrak = getActivePraktikum();
+  const maxKel = Math.max((curPrak && curPrak.jumlahKelompok) || 8, 8);
+  const kelSet = new Set(Array.from({ length: maxKel }, (_, i) => `Kelompok ${i + 1}`));
+  (AppState.praktikanList || []).forEach(p => {
+    if (p.kelompok && p.kelompok.trim()) kelSet.add(p.kelompok.trim());
+  });
+  const allKelompokList = Array.from(kelSet).sort((a, b) => {
+    const numA = parseInt(a.replace(/\D/g, '')) || 0;
+    const numB = parseInt(b.replace(/\D/g, '')) || 0;
+    return numA - numB;
+  });
+
   // Hitung Statistik
   const validScores = summaries.map(s => s.nilaiAkhir);
   const avgClass = validScores.length > 0 ? (validScores.reduce((a, b) => a + b, 0) / validScores.length).toFixed(1) : 0;
@@ -1404,12 +1475,11 @@ function renderRekapitulasiView() {
           <div class="flex items-center space-x-2">
             <input type="text" id="rekap-search-input" oninput="filterRekapTable()" placeholder="Cari Nama / NIM..." 
               class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d] w-48">
-            <select id="rekap-filter-kelompok" onchange="filterRekapTable()" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs">
+            <select id="rekap-filter-kelompok" onchange="filterRekapTable()" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 focus:ring-1 focus:ring-[#56b29d] focus:outline-none">
               <option value="">Semua Kelompok</option>
-              <option value="Kelompok 1">Kelompok 1</option>
-              <option value="Kelompok 2">Kelompok 2</option>
-              <option value="Kelompok 3">Kelompok 3</option>
-              <option value="Kelompok 4">Kelompok 4</option>
+              ${allKelompokList.map(k => `
+                <option value="${escapeHtml(k)}">${escapeHtml(k)}</option>
+              `).join('')}
             </select>
           </div>
         </div>
@@ -1618,99 +1688,6 @@ function renderInputNilaiCoAssView() {
             `).join('')}
           </select>
           <div class="text-[11px] text-slate-400 mt-1 font-mono">Pembaruan: ${escapeHtml(lastUpdated)}</div>
-        </div>
-      </div>
-
-      <!-- Widget Bobot Komponen Fleksibel (Co.Ass Bisa Ubah Langsung & Total Bisa > 100% untuk Apresiasi Nilai) -->
-      <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
-          <div class="flex items-center space-x-2">
-            <div class="w-7 h-7 rounded-lg bg-teal-50 text-[#36786a] flex items-center justify-center shrink-0">
-              <i data-lucide="sliders" class="w-4 h-4"></i>
-            </div>
-            <div>
-              <h4 class="font-title text-xs font-bold text-slate-800">Pengaturan Bobot Penilaian Co.Ass (Fleksibel & Bisa > 100%)</h4>
-              <p class="text-[11px] text-slate-500">Ubah persentase bobot langsung di sini. Total bisa lebih dari 100% untuk memberi apresiasi nilai lebih (misal: kemauan/sikap tinggi).</p>
-            </div>
-          </div>
-          <div class="flex items-center space-x-2 shrink-0">
-            <span id="coass-grading-total-weight-badge" class="${totalWeightClass}">${totalWeightText}</span>
-            <button type="button" onclick="resetGradingWeightsToDefault()" class="text-[11px] text-slate-500 hover:text-slate-700 underline font-medium">Reset Default</button>
-          </div>
-        </div>
-
-        <!-- 7 Kolom Input Bobot Persentase -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 text-center text-xs">
-          <div class="bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">1. Laporan</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-laporan" value="${currentWeights.laporan ?? 35}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
-              <span class="text-slate-400 font-bold">%</span>
-            </div>
-          </div>
-          <div class="bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">2. Video</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-video" value="${currentWeights.video ?? 10}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
-              <span class="text-slate-400 font-bold">%</span>
-            </div>
-          </div>
-          <div class="bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">3. Performa</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-performa" value="${currentWeights.performa ?? 15}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
-              <span class="text-slate-400 font-bold">%</span>
-            </div>
-          </div>
-          <div class="bg-purple-50/80 p-2 rounded-lg border border-purple-200 ring-1 ring-purple-300/60">
-            <label class="block text-[11px] font-bold text-purple-900 mb-1">4. Sikap (Apresiasi)</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-sikap" value="${currentWeights.sikap ?? 10}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-purple-300 font-mono font-bold text-purple-900 text-xs bg-white shadow-sm" title="Tingkatkan persentase sikap untuk memberikan apresiasi nilai lebih pada praktikan">
-              <span class="text-purple-700 font-bold">%</span>
-            </div>
-          </div>
-          <div class="bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">5. Format</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-format" value="${currentWeights.formatLaporan ?? 5}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
-              <span class="text-slate-400 font-bold">%</span>
-            </div>
-          </div>
-          <div class="bg-teal-50/80 p-2 rounded-lg border border-teal-200">
-            <label class="block text-[11px] font-bold text-teal-800 mb-1">6. Responsi</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-responsi" value="${currentWeights.responsi ?? 20}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-teal-300 font-mono font-bold text-teal-800 text-xs bg-white">
-              <span class="text-teal-600 font-bold">%</span>
-            </div>
-          </div>
-          <div class="bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <label class="block text-[11px] font-semibold text-slate-600 mb-1">7. Kedisiplinan</label>
-            <div class="flex items-center justify-center space-x-1">
-              <input type="number" min="0" max="100" id="weight-input-k3" value="${currentWeights.k3Kedisiplinan ?? 5}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
-              <span class="text-slate-400 font-bold">%</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Live Score & Grade Akumulasi Praktikan Terpilih -->
-        <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div class="flex items-center space-x-3">
-            <div class="w-9 h-9 rounded-lg bg-[#56b29d] text-white flex items-center justify-center font-bold text-base shadow-sm" id="live-final-grade-box">
-              ${curSummary.grade}
-            </div>
-            <div>
-              <span class="text-[10px] text-slate-500 uppercase font-semibold block">Nilai Akhir Akumulasi Praktikan:</span>
-              <div class="text-base font-extrabold text-slate-900 font-mono leading-none">
-                <span id="live-final-score-val">${curSummary.nilaiAkhir.toFixed(2)}</span>
-                <span class="text-xs font-normal text-slate-400">/ 100</span>
-                <span id="live-final-grade-label" class="ml-2 text-xs font-bold text-emerald-700 font-sans">(${curSummary.gradeLabel})</span>
-              </div>
-            </div>
-          </div>
-          <div class="text-right">
-            <span class="text-[11px] text-slate-500">Status: <strong id="live-final-status-lulus" class="${curSummary.statusLulus === 'LULUS' ? 'text-emerald-700' : 'text-rose-600'}">${curSummary.statusLulus}</strong></span>
-            <p class="text-[10px] text-slate-400">Perubahan bobot langsung mengkalkulasi nilai akhir praktikan secara instan.</p>
-          </div>
         </div>
       </div>
 
@@ -2264,40 +2241,39 @@ function renderInputNilaiCoAssView() {
 
           <!-- SUB-TAB 8: KEHADIRAN & KONSULTASI -->
           <div id="subtab-content-tab-kehadiran" class="space-y-5 hidden">
-            <!-- Presensi Praktikum -->
+            <!-- Presensi Praktikum (Ceklist & Tanggal Saja Sesuai Permintaan User) -->
             <div class="space-y-3">
-              <h4 class="font-title text-base font-bold text-slate-900">Status Kehadiran Tiap Acara</h4>
+              <div>
+                <h4 class="font-title text-base font-bold text-slate-900">Presensi Kehadiran Praktikum Tiap Acara</h4>
+                <p class="text-xs text-slate-500">Beri tanda centang (ceklis) jika praktikan hadir pada acara praktikum dan sesuaikan tanggal pelaksanaannya.</p>
+              </div>
               <div class="overflow-x-auto rounded-lg border border-slate-200">
                 <table class="w-full text-left text-xs">
-                  <thead class="bg-slate-100 font-semibold text-slate-700">
+                  <thead class="bg-slate-900 text-white font-semibold">
                     <tr>
-                      <th class="p-2.5">Acara</th>
-                      <th class="p-2.5">Status Kehadiran</th>
-                      <th class="p-2.5">Tanggal</th>
-                      <th class="p-2.5">Keterangan</th>
+                      <th class="p-3 w-12 text-center">No</th>
+                      <th class="p-3">Acara Praktikum</th>
+                      <th class="p-3 text-center">Status Kehadiran</th>
+                      <th class="p-3">Tanggal Pelaksanaan</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-100">
-                    ${AppState.acaraList.map(ac => {
+                    ${AppState.acaraList.map((ac, idx) => {
                       const listK = AppState.grades.kehadiran[selectedNim] || [];
-                      const kData = listK.find(k => k.acaraId === ac.id) || { status: 'Hadir', tanggal: '2026-10-15', keterangan: '' };
+                      const kData = listK.find(k => k.acaraId === ac.id) || { status: 'Hadir', tanggal: new Date().toISOString().split('T')[0] };
+                      const isHadir = (kData.status === 'Hadir' || kData.status === true || !kData.status || kData.status === 'Terlambat');
                       return `
-                        <tr>
-                          <td class="p-2.5 font-medium text-slate-800">${escapeHtml(ac.nama)}</td>
-                          <td class="p-2.5">
-                            <select id="status-hadir-${ac.id}" class="px-2 py-1 rounded border border-slate-300 text-xs font-medium">
-                              <option value="Hadir" ${kData.status === 'Hadir' ? 'selected' : ''}>Hadir Praktikum</option>
-                              <option value="Izin" ${kData.status === 'Izin' ? 'selected' : ''}>Izin Resmi</option>
-                              <option value="Sakit" ${kData.status === 'Sakit' ? 'selected' : ''}>Sakit (Surat Dokter)</option>
-                              <option value="Alpa" ${kData.status === 'Alpa' ? 'selected' : ''}>Tanpa Keterangan (Alpa)</option>
-                              <option value="Terlambat" ${kData.status === 'Terlambat' ? 'selected' : ''}>Terlambat</option>
-                            </select>
+                        <tr class="hover:bg-slate-50 transition">
+                          <td class="p-3 text-center font-mono text-slate-400 font-medium">${idx + 1}</td>
+                          <td class="p-3 font-semibold text-slate-900">${escapeHtml(ac.nama)}</td>
+                          <td class="p-3 text-center">
+                            <label class="inline-flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-slate-200 hover:border-emerald-400 shadow-xs transition">
+                              <input type="checkbox" id="status-hadir-${ac.id}" ${isHadir ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d] cursor-pointer">
+                              <span class="text-xs font-semibold ${isHadir ? 'text-emerald-800' : 'text-slate-500'}">Hadir</span>
+                            </label>
                           </td>
-                          <td class="p-2.5">
-                            <input type="date" id="tgl-hadir-${ac.id}" value="${kData.tanggal || '2026-10-15'}" class="px-2 py-1 rounded border border-slate-300 text-xs">
-                          </td>
-                          <td class="p-2.5">
-                            <input type="text" id="ket-hadir-${ac.id}" value="${escapeHtml(kData.keterangan || '')}" placeholder="Keterangan..." class="px-2 py-1 rounded border border-slate-300 text-xs w-full">
+                          <td class="p-3">
+                            <input type="date" id="tgl-hadir-${ac.id}" value="${kData.tanggal || new Date().toISOString().split('T')[0]}" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-mono font-medium focus:ring-1 focus:ring-[#56b29d]">
                           </td>
                         </tr>
                       `;
@@ -2321,6 +2297,105 @@ function renderInputNilaiCoAssView() {
                 ${renderKonsultasiListHtml(selectedNim)}
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Widget Bobot Komponen Fleksibel (Berada di Bawah Penilaian Sesuai Permintaan User) -->
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+          <div class="flex items-center space-x-2.5">
+            <div class="w-8 h-8 rounded-lg bg-teal-50 text-[#36786a] flex items-center justify-center shrink-0">
+              <i data-lucide="sliders" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h4 class="font-title text-sm font-bold text-slate-900">Pengaturan Bobot Penilaian Co.Ass (Fleksibel & Bisa > 100%)</h4>
+              <p class="text-xs text-slate-500">Ubah persentase bobot langsung di sini. Total bisa lebih dari 100% untuk memberi apresiasi nilai lebih (misal: kemauan/sikap tinggi).</p>
+            </div>
+          </div>
+          <div class="flex items-center space-x-2.5 shrink-0">
+            <span id="coass-grading-total-weight-badge" class="${totalWeightClass}">${totalWeightText}</span>
+            <button type="button" onclick="resetGradingWeightsToDefault()" class="text-xs text-slate-500 hover:text-slate-700 underline font-medium">Reset Default</button>
+          </div>
+        </div>
+
+        <!-- 7 Kolom Input Bobot Persentase -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2.5 text-center text-xs">
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">1. Laporan</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-laporan" value="${currentWeights.laporan ?? 35}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+              <span class="text-slate-400 font-bold">%</span>
+            </div>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">2. Video</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-video" value="${currentWeights.video ?? 10}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+              <span class="text-slate-400 font-bold">%</span>
+            </div>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">3. Performa</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-performa" value="${currentWeights.performa ?? 15}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+              <span class="text-slate-400 font-bold">%</span>
+            </div>
+          </div>
+          <div class="bg-purple-50/80 p-2.5 rounded-lg border border-purple-200 ring-1 ring-purple-300/60">
+            <label class="block text-[11px] font-bold text-purple-900 mb-1">4. Sikap (Apresiasi)</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-sikap" value="${currentWeights.sikap ?? 10}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-purple-300 font-mono font-bold text-purple-900 text-xs bg-white shadow-sm" title="Tingkatkan persentase sikap untuk memberikan apresiasi nilai lebih pada praktikan">
+              <span class="text-purple-700 font-bold">%</span>
+            </div>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">5. Format</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-format" value="${currentWeights.formatLaporan ?? 5}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+              <span class="text-slate-400 font-bold">%</span>
+            </div>
+          </div>
+          <div class="bg-teal-50/80 p-2.5 rounded-lg border border-teal-200">
+            <label class="block text-[11px] font-bold text-teal-800 mb-1">6. Responsi</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-responsi" value="${currentWeights.responsi ?? 20}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-teal-300 font-mono font-bold text-teal-800 text-xs bg-white">
+              <span class="text-teal-600 font-bold">%</span>
+            </div>
+          </div>
+          <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">7. Kedisiplinan</label>
+            <div class="flex items-center justify-center space-x-1">
+              <input type="number" min="0" max="100" id="weight-input-k3" value="${currentWeights.k3Kedisiplinan ?? 5}" oninput="handleGradingWeightChange()" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+              <span class="text-slate-400 font-bold">%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Score & Grade Akumulasi Praktikan Terpilih + Tombol Simpan -->
+        <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-4 text-xs">
+          <div class="flex items-center space-x-3.5">
+            <div class="w-11 h-11 rounded-xl bg-[#56b29d] text-white flex items-center justify-center font-bold text-lg shadow-sm" id="live-final-grade-box">
+              ${curSummary.grade}
+            </div>
+            <div>
+              <span class="text-[11px] text-slate-500 uppercase font-semibold block">Nilai Akhir Akumulasi Praktikan:</span>
+              <div class="text-lg font-extrabold text-slate-900 font-mono leading-none mt-0.5">
+                <span id="live-final-score-val">${curSummary.nilaiAkhir.toFixed(2)}</span>
+                <span class="text-xs font-normal text-slate-400">/ 100</span>
+                <span id="live-final-grade-label" class="ml-2 text-xs font-bold text-emerald-700 font-sans">(${curSummary.gradeLabel})</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center space-x-3">
+            <div class="text-right">
+              <span class="text-xs text-slate-600">Status Kelulusan: <strong id="live-final-status-lulus" class="${curSummary.statusLulus === 'LULUS' ? 'text-emerald-700' : 'text-rose-600'}">${curSummary.statusLulus}</strong></span>
+              <p class="text-[10px] text-slate-400">Perubahan bobot langsung mengkalkulasi nilai akhir praktikan secara instan.</p>
+            </div>
+            <button onclick="saveCurrentGradingForm('${escapeHtml(selectedNim)}', ${selectedAcaraId})" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-bold py-2.5 px-4 rounded-xl shadow-sm transition flex items-center space-x-2 text-xs">
+              <i data-lucide="save" class="w-4 h-4"></i>
+              <span>Simpan / Update Nilai</span>
+            </button>
           </div>
         </div>
       </div>
@@ -2373,6 +2448,27 @@ function renderDetailPraktikanView() {
   const sikData = (AppState.grades.sikap && AppState.grades.sikap[nim]) || { scores: {} };
   const presensiData = (AppState.grades.kehadiran && AppState.grades.kehadiran[nim]) || [];
   const konsulData = (AppState.grades.konsultasi && AppState.grades.konsultasi[nim]) || [];
+
+  // Pilihan Koordinator / Dospem Penandatangan KHP yang fleksibel
+  const koorList = (AppState.koordinatorList && AppState.koordinatorList.length > 0)
+    ? AppState.koordinatorList
+    : DEFAULT_KOORDINATOR;
+
+  let activeSigner = koorList.find(k => k.id === (AppState.config && AppState.config.selectedSignerKoordinatorId));
+  if (!activeSigner) {
+    activeSigner = koorList[0] || {
+      id: "koor-develob",
+      nama: "Justiar Noer",
+      roleJabatan: "Koordinator",
+      email: (AppState.config && AppState.config.developerEmail) || "juzantiara@gmail.com"
+    };
+  }
+
+  const signerLabel = (activeSigner.roleJabatan && activeSigner.roleJabatan.toLowerCase().includes('dosen'))
+    ? 'Dosen Pembimbing Praktikum'
+    : 'Koordinator Praktikum';
+
+  const canChangeSigner = AppState.currentUser && (AppState.currentUser.role === 'developer' || AppState.currentUser.role === 'coass');
 
   return `
     <div class="output-praktikan space-y-6 max-w-4xl mx-auto" id="kartu-hasil-praktikum" style="font-family: 'Times New Roman', Times, serif !important;">
@@ -2629,7 +2725,7 @@ function renderDetailPraktikanView() {
                     <tr>
                       <th class="p-2">Acara</th>
                       <th class="p-2">Status</th>
-                      <th class="p-2">Keterangan</th>
+                      <th class="p-2">Tanggal</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-100">
@@ -2637,9 +2733,9 @@ function renderDetailPraktikanView() {
                       <tr>
                         <td class="p-2 font-medium">Acara ${k.acaraId}</td>
                         <td class="p-2">
-                          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${k.status === 'Hadir' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">${escapeHtml(k.status)}</span>
+                          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${(k.status === 'Hadir' || k.status === true) ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">${escapeHtml(k.status || 'Hadir')}</span>
                         </td>
-                        <td class="p-2 text-slate-500">${escapeHtml(k.keterangan || '-')}</td>
+                        <td class="p-2 text-slate-500 font-mono">${escapeHtml(k.tanggal || '-')}</td>
                       </tr>
                     `).join('')}
                   </tbody>
@@ -2669,8 +2765,26 @@ function renderDetailPraktikanView() {
       </div>
 
       <!-- Tanda Tangan Cetak KHP -->
-      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm print:block">
-        <div class="grid grid-cols-3 gap-6 text-center text-xs pt-4">
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm print:block space-y-4">
+        ${canChangeSigner ? `
+          <div class="print:hidden p-3 bg-emerald-50/80 border border-emerald-200/80 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs" style="font-family: 'Poppins', sans-serif !important;">
+            <div class="flex items-center space-x-2">
+              <i data-lucide="pen-tool" class="w-4 h-4 text-[#36786a]"></i>
+              <span class="font-semibold text-slate-800">Pilih Koordinator / Dospem Penandatangan KHP:</span>
+            </div>
+            <div class="flex items-center space-x-2">
+              <select onchange="changeSelectedKoordinatorSigner(this.value)" class="bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-[#56b29d] focus:outline-none shadow-sm cursor-pointer">
+                ${koorList.map(k => `
+                  <option value="${escapeHtml(k.id)}" ${k.id === activeSigner.id ? 'selected' : ''}>
+                    ${escapeHtml(k.nama)} — ${escapeHtml(k.roleJabatan || 'Koordinator')}
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="grid grid-cols-3 gap-6 text-center text-xs pt-2">
           <div>
             <p class="text-slate-500">Mahasiswa Praktikan,</p>
             <div class="h-16"></div>
@@ -2684,10 +2798,10 @@ function renderDetailPraktikanView() {
             <p class="text-slate-400">Asisten Praktikum</p>
           </div>
           <div>
-            <p class="text-slate-500">Koordinator Praktikum,</p>
+            <p class="text-slate-500">${escapeHtml(signerLabel)},</p>
             <div class="h-16"></div>
-            <p class="font-bold text-slate-900 underline">Tiara Juzan, S.Si.</p>
-            <p class="text-slate-400">${escapeHtml(AppState.config.developerEmail)}</p>
+            <p class="font-bold text-slate-900 underline">${escapeHtml(activeSigner.nama)}</p>
+            <p class="text-slate-400">${escapeHtml(activeSigner.roleJabatan || 'Koordinator Praktikum')}</p>
           </div>
         </div>
       </div>
@@ -3144,6 +3258,28 @@ function renderPengaturanView() {
           </button>
         </div>
 
+        <!-- Selector Penandatangan KHP Aktif -->
+        <div class="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div class="flex items-center space-x-3">
+            <div class="w-9 h-9 rounded-lg bg-emerald-100 text-[#2d6055] flex items-center justify-center shrink-0">
+              <i data-lucide="pen-tool" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <p class="font-bold text-slate-800 text-sm">Koordinator / Dospem Penandatangan KHP</p>
+              <p class="text-[11px] text-slate-500">Pilih akun yang namanya akan otomatis tercantum pada tanda tangan Kartu Hasil Praktikum (KHP).</p>
+            </div>
+          </div>
+          <div class="flex items-center space-x-2 shrink-0">
+            <select onchange="changeSelectedKoordinatorSigner(this.value)" class="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-[#56b29d] shadow-sm cursor-pointer">
+              ${(AppState.koordinatorList || DEFAULT_KOORDINATOR).map(k => `
+                <option value="${escapeHtml(k.id)}" ${k.id === (AppState.config && AppState.config.selectedSignerKoordinatorId || 'koor-develob') ? 'selected' : ''}>
+                  ${escapeHtml(k.nama)} (${escapeHtml(k.roleJabatan || 'Koordinator')}) ${k.id === (AppState.config && AppState.config.selectedSignerKoordinatorId || 'koor-develob') ? '✓ Terpilih' : ''}
+                </option>
+              `).join('')}
+            </select>
+          </div>
+        </div>
+
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs">
             <thead class="bg-slate-900 text-white font-title">
@@ -3169,9 +3305,21 @@ function renderPengaturanView() {
                     </button>
                   </td>
                   <td class="p-2.5">
-                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                      ${escapeHtml(k.roleJabatan || 'Koordinator')}
-                    </span>
+                    <div class="flex items-center flex-wrap gap-1.5">
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${k.roleJabatan === 'Dosen Pembimbing' ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}">
+                        ${escapeHtml(k.roleJabatan || 'Koordinator')}
+                      </span>
+                      ${k.id === (AppState.config && AppState.config.selectedSignerKoordinatorId || 'koor-develob') ? `
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#36786a] text-white flex items-center space-x-1 shadow-xs">
+                          <i data-lucide="check" class="w-3 h-3 inline"></i>
+                          <span>Penandatangan KHP</span>
+                        </span>
+                      ` : `
+                        <button type="button" onclick="changeSelectedKoordinatorSigner('${escapeHtml(k.id)}')" class="px-2 py-0.5 rounded-full text-[10px] font-medium text-slate-600 hover:text-[#2d6055] hover:bg-emerald-50 border border-dashed border-slate-300 transition" title="Jadikan akun ini penandatangan lembar KHP">
+                          Jadikan TTD KHP
+                        </button>
+                      `}
+                    </div>
                   </td>
                   <td class="p-2.5 text-center space-x-1">
                     <button onclick="openModalEditKoordinator('${escapeHtml(k.id)}')" class="p-1 text-[#36786a] hover:text-[#1b5e20]" title="Edit Akun">
@@ -3605,6 +3753,22 @@ function handleEditKoordinatorSubmit(e, id) {
   showToast(`Akun ${k.nama} berhasil diperbarui!`, 'success');
 }
 
+function changeSelectedKoordinatorSigner(id) {
+  if (!id) return;
+  if (!AppState.config) AppState.config = Object.assign({}, DEFAULT_CONFIG);
+  AppState.config.selectedSignerKoordinatorId = id;
+  saveStateToStorage();
+  syncWithGoogleSheets(false);
+  renderApp();
+  const koorList = (AppState.koordinatorList && AppState.koordinatorList.length > 0)
+    ? AppState.koordinatorList
+    : DEFAULT_KOORDINATOR;
+  const signer = koorList.find(k => k.id === id);
+  if (signer) {
+    showToast(`Penandatangan KHP diubah menjadi: ${signer.nama} (${signer.roleJabatan || 'Koordinator'})`, 'success');
+  }
+}
+
 function hapusKoordinator(id) {
   if ((AppState.koordinatorList || DEFAULT_KOORDINATOR).length <= 1) {
     alert('Minimal harus ada 1 akun Koordinator / Dospem di sistem.');
@@ -3612,6 +3776,12 @@ function hapusKoordinator(id) {
   }
   if (!confirm('Apakah Anda yakin ingin menghapus akun ini?')) return;
   AppState.koordinatorList = (AppState.koordinatorList || DEFAULT_KOORDINATOR).filter(k => k.id !== id);
+  if (AppState.config && AppState.config.selectedSignerKoordinatorId === id) {
+    const remaining = (AppState.koordinatorList || DEFAULT_KOORDINATOR)[0];
+    if (remaining) {
+      AppState.config.selectedSignerKoordinatorId = remaining.id;
+    }
+  }
   saveStateToStorage();
   syncWithGoogleSheets(false);
   renderApp();
@@ -4820,16 +4990,16 @@ function saveCurrentGradingForm(nim, acaraId) {
     catatan: k3Catatan
   };
 
-  // 8. Simpan Kehadiran Tiap Acara
+  // 8. Simpan Kehadiran Tiap Acara (Ceklist & Tanggal)
   AppState.grades.kehadiran[nim] = AppState.acaraList.map(ac => {
     const statusEl = document.getElementById(`status-hadir-${ac.id}`);
     const tglEl = document.getElementById(`tgl-hadir-${ac.id}`);
-    const ketEl = document.getElementById(`ket-hadir-${ac.id}`);
+    const isChecked = statusEl ? (statusEl.type === 'checkbox' ? statusEl.checked : (statusEl.value === 'Hadir')) : true;
     return {
       acaraId: ac.id,
-      status: statusEl ? statusEl.value : 'Hadir',
-      tanggal: tglEl ? tglEl.value : '2026-10-15',
-      keterangan: ketEl ? ketEl.value : ''
+      status: isChecked ? 'Hadir' : 'Tidak Hadir',
+      tanggal: (tglEl && tglEl.value) ? tglEl.value : new Date().toISOString().split('T')[0],
+      keterangan: isChecked ? 'Hadir' : 'Tidak Hadir'
     };
   });
 
@@ -5689,7 +5859,17 @@ async function syncWithGoogleSheets(isManual = false) {
         rekap: rekapList,
         grades: AppState.grades,
         praktikumList: AppState.praktikumList,
-        globalResponsi: AppState.globalResponsi || {}
+        globalResponsi: AppState.globalResponsi || {},
+        koordinatorList: AppState.koordinatorList || DEFAULT_KOORDINATOR,
+        config: {
+          courseTitle: (AppState.config && AppState.config.courseTitle) || DEFAULT_CONFIG.courseTitle,
+          institution: (AppState.config && AppState.config.institution) || DEFAULT_CONFIG.institution,
+          academicYear: (AppState.config && AppState.config.academicYear) || DEFAULT_CONFIG.academicYear,
+          semester: (AppState.config && AppState.config.semester) || DEFAULT_CONFIG.semester,
+          developerEmail: (AppState.config && AppState.config.developerEmail) || DEFAULT_CONFIG.developerEmail,
+          selectedSignerKoordinatorId: (AppState.config && AppState.config.selectedSignerKoordinatorId) || DEFAULT_CONFIG.selectedSignerKoordinatorId,
+          weights: (AppState.config && AppState.config.weights) || DEFAULT_CONFIG.weights
+        }
       }
     };
 
@@ -5775,14 +5955,14 @@ async function pullFromGoogleSheets(isManual = true) {
           AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
         });
       }
-      if (json.data.globalResponsi) {
-        AppState.globalResponsi = Object.assign({}, AppState.globalResponsi || {}, json.data.globalResponsi);
+      if (json.data.koordinatorList && json.data.koordinatorList.length > 0) {
+        AppState.koordinatorList = json.data.koordinatorList;
       }
-      if (AppState.globalResponsi && AppState.grades) {
-        if (!AppState.grades.responsi) AppState.grades.responsi = {};
-        Object.keys(AppState.globalResponsi).forEach(nim => {
-          AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
-        });
+      if (json.data.config && typeof json.data.config === 'object') {
+        if (!AppState.config) AppState.config = Object.assign({}, DEFAULT_CONFIG);
+        if (json.data.config.selectedSignerKoordinatorId) {
+          AppState.config.selectedSignerKoordinatorId = json.data.config.selectedSignerKoordinatorId;
+        }
       }
 
       AppState.syncStatus.online = true;
@@ -5839,6 +6019,15 @@ async function pullFromGoogleSheetsSilent(showToastNotice = false) {
         Object.keys(AppState.globalResponsi).forEach(nim => {
           AppState.grades.responsi[nim] = AppState.globalResponsi[nim];
         });
+      }
+      if (json.data.koordinatorList && json.data.koordinatorList.length > 0) {
+        AppState.koordinatorList = json.data.koordinatorList;
+      }
+      if (json.data.config && typeof json.data.config === 'object') {
+        if (!AppState.config) AppState.config = Object.assign({}, DEFAULT_CONFIG);
+        if (json.data.config.selectedSignerKoordinatorId) {
+          AppState.config.selectedSignerKoordinatorId = json.data.config.selectedSignerKoordinatorId;
+        }
       }
       AppState.syncStatus.online = true;
       AppState.syncStatus.lastSync = new Date().toLocaleTimeString();
