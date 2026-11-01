@@ -1,8 +1,50 @@
-﻿/**
+/**
  * DATA SEED & INITIAL CONFIGURATION
  * Sistem Penilaian Praktikum Berbasis Google Drive & Web
  * Email Developer / Database Owner: juzantiara@gmail.com
  */
+
+// Konfigurasi Standar Komponen & Sub-Penilaian Aktif oleh Koordinator
+const DEFAULT_EVALUATION_CONFIG = {
+  components: {
+    laporan: true,
+    video: true,
+    performa: true,
+    sikap: true,
+    formatLaporan: true,
+    responsi: true,
+    k3Kedisiplinan: true,
+    kehadiran: true
+  },
+  subIndicators: {
+    // Laporan
+    lap_1: true,
+    lap_2: true,
+    lap_3: true,
+    // Video
+    vid_1: true,
+    vid_2: true,
+    // Performa
+    perf_1: true,
+    perf_7: true,
+    perf_8: true,
+    // Sikap
+    sik_1: true,
+    sik_3: true,
+    // Format Laporan
+    fmt_1: true,
+    fmt_5: true,
+    fmt_8: true,
+    // Responsi
+    resp_1: true,
+    resp_5: true,
+    resp_videoIndividu: false,
+    resp_videoKelompok: false,
+    // Kedisiplinan
+    k3_2: true,
+    k3_4: true
+  }
+};
 
 const DEFAULT_CONFIG = {
   courseTitle: "Sistem Penilaian Praktikum",
@@ -15,6 +57,7 @@ const DEFAULT_CONFIG = {
   googleAppsScriptUrl: "https://script.google.com/macros/s/AKfycbyaNqIn49GOSGIYPjmU1YVEWke6sknEme90dp-JGJA2Dmkh9SjVRdVUhCODXxigPKo4/exec", // URL Web App Google Apps Script di drive juzantiara@gmail.com
   selectedSignerKoordinatorId: "koor-develob",
   syncAuto: true,
+  evaluationConfig: DEFAULT_EVALUATION_CONFIG,
   weights: {
     laporan: 35,       // Rata-rata Laporan: 35%
     video: 10,         // Rata-rata Video: 10%

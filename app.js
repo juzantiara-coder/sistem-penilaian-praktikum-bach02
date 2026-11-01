@@ -130,6 +130,27 @@ function getActivePraktikum() {
   return found;
 }
 
+/**
+ * Mendapatkan Daftar Kelompok Praktikum Terurut (Kelompok 1 s/d minimal 8 atau sesuai jumlah kelompok)
+ */
+function getKelompokList() {
+  const curPrak = getActivePraktikum();
+  const maxKel = Math.max((curPrak && curPrak.jumlahKelompok) || 8, 8);
+  const kelSet = new Set(Array.from({ length: maxKel }, (_, i) => `Kelompok ${i + 1}`));
+  (AppState.praktikanList || []).forEach(p => {
+    if (p.kelompok && p.kelompok.trim()) kelSet.add(p.kelompok.trim());
+  });
+  return Array.from(kelSet).sort((a, b) => {
+    const numA = parseInt(a.replace(/\D/g, '')) || 0;
+    const numB = parseInt(b.replace(/\D/g, '')) || 0;
+    return numA - numB;
+  });
+}
+
+function isKoordinatorOrDeveloper() {
+  return Boolean(AppState.currentUser && (AppState.currentUser.role === 'developer' || AppState.currentUser.role === 'koordinator'));
+}
+
 function saveCurrentPraktikumState() {
   const cur = getActivePraktikum();
   if (cur) {
@@ -137,6 +158,7 @@ function saveCurrentPraktikumState() {
     cur.tahunAkademik = (AppState.config && AppState.config.academicYear) || cur.tahunAkademik;
     cur.semester = (AppState.config && AppState.config.semester) || cur.semester;
     cur.weights = (AppState.config && AppState.config.weights) || cur.weights || DEFAULT_CONFIG.weights;
+    cur.evaluationConfig = (AppState.config && AppState.config.evaluationConfig) || cur.evaluationConfig || DEFAULT_EVALUATION_CONFIG;
     cur.acaraList = AppState.acaraList;
     cur.praktikanList = AppState.praktikanList;
     cur.grades = AppState.grades;
@@ -152,6 +174,7 @@ function switchPraktikum(prakId) {
   AppState.config.academicYear = p.tahunAkademik || AppState.config.academicYear;
   AppState.config.semester = p.semester || AppState.config.semester;
   AppState.config.weights = p.weights || JSON.parse(JSON.stringify(DEFAULT_CONFIG.weights));
+  AppState.config.evaluationConfig = p.evaluationConfig || JSON.parse(JSON.stringify(DEFAULT_EVALUATION_CONFIG));
   AppState.acaraList = p.acaraList || JSON.parse(JSON.stringify(DEFAULT_ACARA));
   AppState.praktikanList = (p.praktikanList || []).map(normalizePraktikanItem);
   AppState.grades = p.grades || { laporan:{}, video:{}, performa:{}, sikap:{}, formatLaporan:{}, responsi:{}, k3Kedisiplinan:{}, kehadiran:{}, konsultasi:{}, catatanEvaluasi:{} };
@@ -206,6 +229,14 @@ function initAppState() {
     try {
       const parsed = JSON.parse(savedState);
       AppState.config = Object.assign({}, DEFAULT_CONFIG, parsed.config || {});
+      // Inisialisasi & sinkronisasi evaluationConfig
+      AppState.config.evaluationConfig = Object.assign({}, DEFAULT_EVALUATION_CONFIG, (parsed.config && parsed.config.evaluationConfig) || {});
+      if (AppState.config.evaluationConfig.components) {
+        AppState.config.evaluationConfig.components = Object.assign({}, DEFAULT_EVALUATION_CONFIG.components, AppState.config.evaluationConfig.components);
+      }
+      if (AppState.config.evaluationConfig.subIndicators) {
+        AppState.config.evaluationConfig.subIndicators = Object.assign({}, DEFAULT_EVALUATION_CONFIG.subIndicators, AppState.config.evaluationConfig.subIndicators);
+      }
       if (!AppState.config.googleAppsScriptUrl && DEFAULT_CONFIG.googleAppsScriptUrl) {
         AppState.config.googleAppsScriptUrl = DEFAULT_CONFIG.googleAppsScriptUrl;
       }
@@ -285,6 +316,7 @@ function initAppState() {
 
 function loadSeedData() {
   AppState.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  AppState.config.evaluationConfig = JSON.parse(JSON.stringify(DEFAULT_EVALUATION_CONFIG));
   AppState.config.institution = "INSTITUT PERTANIAN STIPER (INSTIPER) YOGYAKARTA";
   AppState.koordinatorList = JSON.parse(JSON.stringify(DEFAULT_KOORDINATOR));
   AppState.coassList = sanitizeCoAssList(DEFAULT_COASS);
@@ -803,15 +835,26 @@ function getPraktikanCompleteSummary(nim) {
   const scoreK3 = (k3Entry && isK3Aktif) ? calculateK3Score(k3Entry.scores, k3Entry.checklist, isK3Aktif) : 0;
 
   // 4. Pembobotan Proporsional Dinamis & Fleksibel (Total Bisa > 100% untuk Apresiasi)
+  const evalCfg = (AppState.config && AppState.config.evaluationConfig) || (typeof DEFAULT_EVALUATION_CONFIG !== 'undefined' ? DEFAULT_EVALUATION_CONFIG : null);
+  const compCfg = (evalCfg && evalCfg.components) || {};
+
+  const isLaporanGlobalAktif = compCfg.laporan !== false;
+  const isVideoGlobalAktif = compCfg.video !== false;
+  const isPerfGlobalAktif = compCfg.performa !== false && isPerfAktif;
+  const isSikGlobalAktif = compCfg.sikap !== false && isSikAktif;
+  const isRespGlobalAktif = compCfg.responsi !== false && isRespAktif;
+  const isFmtGlobalAktif = compCfg.formatLaporan !== false && isFmtAktif;
+  const isK3GlobalAktif = compCfg.k3Kedisiplinan !== false && isK3Aktif;
+
   const currentCfgWeights = (AppState.config && AppState.config.weights) || DEFAULT_CONFIG.weights;
   const baseWeights = {
-    laporan: (countLaporanAda === 0) ? 0 : (currentCfgWeights.laporan ?? 35),
-    video: isVideoComponentNA ? 0 : (currentCfgWeights.video ?? 10),
-    performa: !isPerfAktif ? 0 : (currentCfgWeights.performa ?? 15),
-    sikap: !isSikAktif ? 0 : (currentCfgWeights.sikap ?? 10),
-    responsi: !isRespAktif ? 0 : (currentCfgWeights.responsi ?? 20),
-    formatLaporan: !isFmtAktif ? 0 : (currentCfgWeights.formatLaporan ?? 5),
-    k3Kedisiplinan: !isK3Aktif ? 0 : (currentCfgWeights.k3Kedisiplinan ?? 5)
+    laporan: (!isLaporanGlobalAktif || countLaporanAda === 0) ? 0 : (currentCfgWeights.laporan ?? 35),
+    video: (!isVideoGlobalAktif || isVideoComponentNA) ? 0 : (currentCfgWeights.video ?? 10),
+    performa: !isPerfGlobalAktif ? 0 : (currentCfgWeights.performa ?? 15),
+    sikap: !isSikGlobalAktif ? 0 : (currentCfgWeights.sikap ?? 10),
+    responsi: !isRespGlobalAktif ? 0 : (currentCfgWeights.responsi ?? 20),
+    formatLaporan: !isFmtGlobalAktif ? 0 : (currentCfgWeights.formatLaporan ?? 5),
+    k3Kedisiplinan: !isK3GlobalAktif ? 0 : (currentCfgWeights.k3Kedisiplinan ?? 5)
   };
 
   const totalBaseWeight = Object.values(baseWeights).reduce((a, b) => a + b, 0);
@@ -825,7 +868,7 @@ function getPraktikanCompleteSummary(nim) {
     const activeSum = totalBaseWeight > 0 ? totalBaseWeight : 100;
     effectiveWeights = {
       laporan: parseFloat(((baseWeights.laporan / activeSum) * 100).toFixed(2)),
-      video: isVideoComponentNA ? 0 : parseFloat(((baseWeights.video / activeSum) * 100).toFixed(2)),
+      video: (isVideoComponentNA || !isVideoGlobalAktif) ? 0 : parseFloat(((baseWeights.video / activeSum) * 100).toFixed(2)),
       performa: parseFloat(((baseWeights.performa / activeSum) * 100).toFixed(2)),
       sikap: parseFloat(((baseWeights.sikap / activeSum) * 100).toFixed(2)),
       responsi: parseFloat(((baseWeights.responsi / activeSum) * 100).toFixed(2)),
@@ -869,7 +912,7 @@ function getPraktikanCompleteSummary(nim) {
     if (k.status === 'Hadir' || k.status === true) hadirCount++;
     else if (k.status === 'Izin') izinCount++;
     else if (k.status === 'Sakit') sakitCount++;
-    else if (k.status === 'Alpa' || k.status === 'Tanpa Keterangan' || k.status === 'Tidak Hadir' || k.status === false) alpaCount++;
+    else if (k.status === 'Alpa' || k.status === 'Tanpa Keterangan' || k.status === 'Tidak Hadir' || k.status === false || k.status === 'Absen' || k.status === 'Absen (tdk hadir)') alpaCount++;
     else if (k.status === 'Terlambat') { hadirCount++; terlambatCount++; }
   });
 
@@ -1167,6 +1210,14 @@ function renderHeader() {
             </div>
           ` : ''}
 
+          <!-- Tombol Cepat Kontrol Evaluasi untuk Koordinator -->
+          ${isKoordinatorOrDeveloper() ? `
+            <button onclick="openModalAturEvaluasiKoordinator()" class="hidden lg:flex items-center space-x-1.5 text-xs bg-teal-50 hover:bg-teal-100 text-[#2d6055] border border-teal-200 py-1.5 px-3 rounded-lg shadow-xs font-semibold transition" title="Kontrol Penilaian & Sub-Penilaian Aktif oleh Koordinator">
+              <i data-lucide="sliders" class="w-3.5 h-3.5 text-[#56b29d]"></i>
+              <span>Atur Nilai Aktif</span>
+            </button>
+          ` : ''}
+
           <!-- Indikator Google Drive -->
           <div class="hidden md:flex items-center space-x-2 text-xs px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200">
             <span class="w-2 h-2 rounded-full ${AppState.syncStatus.online ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}"></span>
@@ -1361,17 +1412,7 @@ function renderRekapitulasiView() {
   const weights = AppState.config.weights;
 
   // Daftar Kelompok Dinamis (sesuai jumlah kelompok praktikum, default s/d Kelompok 8)
-  const curPrak = getActivePraktikum();
-  const maxKel = Math.max((curPrak && curPrak.jumlahKelompok) || 8, 8);
-  const kelSet = new Set(Array.from({ length: maxKel }, (_, i) => `Kelompok ${i + 1}`));
-  (AppState.praktikanList || []).forEach(p => {
-    if (p.kelompok && p.kelompok.trim()) kelSet.add(p.kelompok.trim());
-  });
-  const allKelompokList = Array.from(kelSet).sort((a, b) => {
-    const numA = parseInt(a.replace(/\D/g, '')) || 0;
-    const numB = parseInt(b.replace(/\D/g, '')) || 0;
-    return numA - numB;
-  });
+  const allKelompokList = getKelompokList();
 
   // Hitung Statistik
   const validScores = summaries.map(s => s.nilaiAkhir);
@@ -1591,6 +1632,15 @@ function renderInputNilaiCoAssView() {
   };
   const k3Entry = AppState.grades.k3Kedisiplinan[selectedNim] || { scores: {}, checklist: {}, aktif: true, catatan: '' };
 
+  const listKehadiran = AppState.grades.kehadiran[selectedNim] || [];
+  const curKehadiran = listKehadiran.find(k => k.acaraId === acara.id) || {
+    acaraId: acara.id,
+    status: 'Hadir',
+    tanggal: new Date().toISOString().split('T')[0],
+    keterangan: 'Hadir'
+  };
+  const curStatus = curKehadiran.status || 'Hadir';
+
   const currentLapTotal = calculateLaporanScore(lapEntry.scores, lapEntry.checklist, lapEntry.aktif !== false);
   const currentVidTotal = calculateVideoScore(vidEntry.scores, vidEntry.isNA, vidEntry.checklist, vidEntry.aktif !== false);
   const currentPerfTotal = calculatePerformaScore(perfEntry.scores, perfEntry.checklist, perfEntry.aktif !== false);
@@ -1623,18 +1673,28 @@ function renderInputNilaiCoAssView() {
     <div class="space-y-6">
       <!-- Toolbar Co.Ass: Update Kapanpun & Sinkronisasi -->
       <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div class="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div class="flex-1 grid grid-cols-1 sm:grid-cols-4 gap-3">
           <div>
             <label class="block text-xs font-semibold text-slate-500 mb-1">Filter Kelompok</label>
             <select id="select-kelompok-grading" onchange="changeGradingKelompokFilter(this.value)" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-medium focus:ring-1 focus:ring-[#56b29d]">
               <option value="all">Semua Kelompok</option>
-              ${Array.from({length: (getActivePraktikum().jumlahKelompok || 8)}, (_, i) => `Kelompok ${i+1}`).map(k => `
+              ${getKelompokList().map(k => `
                 <option value="${k}" ${praktikan.kelompok === k ? 'selected' : ''}>${k}</option>
               `).join('')}
             </select>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-500 mb-1">Pilih Mahasiswa / Praktikan</label>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">Cari Nama / NIM</label>
+            <div class="relative">
+              <input type="text" id="search-praktikan-coass" placeholder="Ketik nama atau NIM..." oninput="handleSearchPraktikanCoAss(this.value)" class="w-full pl-8 pr-7 py-2 rounded-lg border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">
+              <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400"></i>
+              <button type="button" onclick="clearSearchPraktikanCoAss()" id="btn-clear-search-coass" class="hidden absolute right-2 top-2 text-slate-400 hover:text-slate-600">
+                <i data-lucide="x" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">Pilih Mahasiswa</label>
             <select id="select-praktikan-coass" onchange="changeSelectedPraktikan(this.value)" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-medium focus:ring-1 focus:ring-[#56b29d]">
               ${AppState.praktikanList.map(p => `
                 <option value="${escapeHtml(p.nim)}" ${p.nim === selectedNim ? 'selected' : ''}>
@@ -1655,14 +1715,18 @@ function renderInputNilaiCoAssView() {
           </div>
         </div>
 
-        <div class="flex items-center space-x-2 shrink-0">
+        <div class="flex items-center space-x-2 shrink-0 flex-wrap gap-y-2">
+          <button onclick="openModalExcelNilaiKelompok()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-3 rounded-xl text-xs flex items-center space-x-1.5 shadow-sm transition" title="Input nilai praktikan menggunakan file Excel (.xlsx) per kelompok">
+            <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5"></i>
+            <span>Nilai via Excel</span>
+          </button>
           <button onclick="pullFromGoogleSheets()" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-semibold py-2 px-3 rounded-xl text-xs flex items-center space-x-1.5 transition" title="Tarik pembaruan data terbaru dari Google Drive">
             <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-[#56b29d]"></i>
             <span>Refresh Drive</span>
           </button>
           <button onclick="saveCurrentGradingForm('${escapeHtml(selectedNim)}', ${selectedAcaraId})" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-semibold py-2 px-4 rounded-xl shadow-sm transition flex items-center space-x-2 text-xs">
             <i data-lucide="save" class="w-4 h-4"></i>
-            <span>Simpan / Update Nilai</span>
+            <span>Simpan Nilai</span>
           </button>
         </div>
       </div>
@@ -2239,42 +2303,116 @@ function renderInputNilaiCoAssView() {
             </div>
           </div>
 
-          <!-- SUB-TAB 8: KEHADIRAN & KONSULTASI -->
+          <!-- SUB-TAB 7: KEHADIRAN & KONSULTASI -->
           <div id="subtab-content-tab-kehadiran" class="space-y-5 hidden">
-            <!-- Presensi Praktikum (Ceklist & Tanggal Saja Sesuai Permintaan User) -->
+            <!-- Presensi Khusus Acara Terpilih -->
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-2">
+                <div>
+                  <span class="text-[10px] font-bold text-[#36786a] uppercase tracking-wider bg-teal-50 px-2 py-0.5 rounded border border-teal-200">Presensi Sesi Acara Ini</span>
+                  <h4 class="font-title text-base font-bold text-slate-900 mt-1">${escapeHtml(acara.nama)}</h4>
+                  <p class="text-xs text-slate-500">Pilih status kehadiran praktikan untuk acara ini serta sesuaikan tanggal pelaksanaannya.</p>
+                </div>
+                <div class="text-right">
+                  <span class="text-xs text-slate-500">Status Sesi Ini:</span>
+                  <div class="font-bold text-sm mt-0.5">
+                    <span class="px-2.5 py-1 rounded-full text-xs font-semibold ${
+                      curStatus === 'Hadir' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                      curStatus === 'Sakit' ? 'bg-blue-100 text-blue-800 border border-blue-200' :
+                      curStatus === 'Izin' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                      'bg-rose-100 text-rose-800 border border-rose-200'
+                    }">${curStatus === 'Absen' ? 'Absen (tdk hadir)' : curStatus}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 4 Pilihan Radio Status Kehadiran -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <label class="flex items-center space-x-2.5 p-3 rounded-lg border cursor-pointer transition ${curStatus === 'Hadir' ? 'bg-emerald-50 border-emerald-400 text-emerald-900 ring-2 ring-emerald-400/30 font-bold' : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'}">
+                  <input type="radio" name="status-kehadiran-acara" value="Hadir" ${curStatus === 'Hadir' ? 'checked' : ''} class="text-emerald-600 focus:ring-emerald-500">
+                  <div class="text-xs">
+                    <div class="font-bold">Hadir</div>
+                    <div class="text-[10px] text-slate-500">Mengikuti praktikum</div>
+                  </div>
+                </label>
+
+                <label class="flex items-center space-x-2.5 p-3 rounded-lg border cursor-pointer transition ${curStatus === 'Sakit' ? 'bg-blue-50 border-blue-400 text-blue-900 ring-2 ring-blue-400/30 font-bold' : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'}">
+                  <input type="radio" name="status-kehadiran-acara" value="Sakit" ${curStatus === 'Sakit' ? 'checked' : ''} class="text-blue-600 focus:ring-blue-500">
+                  <div class="text-xs">
+                    <div class="font-bold">Sakit</div>
+                    <div class="text-[10px] text-slate-500">Surat dokter / sakit</div>
+                  </div>
+                </label>
+
+                <label class="flex items-center space-x-2.5 p-3 rounded-lg border cursor-pointer transition ${curStatus === 'Izin' ? 'bg-amber-50 border-amber-400 text-amber-900 ring-2 ring-amber-400/30 font-bold' : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'}">
+                  <input type="radio" name="status-kehadiran-acara" value="Izin" ${curStatus === 'Izin' ? 'checked' : ''} class="text-amber-600 focus:ring-amber-500">
+                  <div class="text-xs">
+                    <div class="font-bold">Izin</div>
+                    <div class="text-[10px] text-slate-500">Izin resmi disetujui</div>
+                  </div>
+                </label>
+
+                <label class="flex items-center space-x-2.5 p-3 rounded-lg border cursor-pointer transition ${(curStatus === 'Absen' || curStatus === 'Tidak Hadir' || curStatus === 'Alpa') ? 'bg-rose-50 border-rose-400 text-rose-900 ring-2 ring-rose-400/30 font-bold' : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'}">
+                  <input type="radio" name="status-kehadiran-acara" value="Absen" ${(curStatus === 'Absen' || curStatus === 'Tidak Hadir' || curStatus === 'Alpa') ? 'checked' : ''} class="text-rose-600 focus:ring-rose-500">
+                  <div class="text-xs">
+                    <div class="font-bold">Absen</div>
+                    <div class="text-[10px] text-slate-500">Absen (tdk hadir)</div>
+                  </div>
+                </label>
+              </div>
+
+              <!-- Tanggal & Catatan Kehadiran Acara Ini -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">Tanggal Pelaksanaan Acara</label>
+                  <input type="date" id="tgl-hadir-acara" value="${curKehadiran.tanggal || new Date().toISOString().split('T')[0]}" class="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-mono font-medium focus:ring-1 focus:ring-[#56b29d]">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">Keterangan Presensi (Opsional)</label>
+                  <input type="text" id="ket-hadir-acara" value="${escapeHtml(curKehadiran.keterangan || '')}" placeholder="Misal: Surat izin terlampir, dispensasi lomba, dll..." class="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs focus:ring-1 focus:ring-[#56b29d]">
+                </div>
+              </div>
+            </div>
+
+            <!-- Ringkasan Kehadiran Seluruh Acara -->
             <div class="space-y-3">
-              <div>
-                <h4 class="font-title text-base font-bold text-slate-900">Presensi Kehadiran Praktikum Tiap Acara</h4>
-                <p class="text-xs text-slate-500">Beri tanda centang (ceklis) jika praktikan hadir pada acara praktikum dan sesuaikan tanggal pelaksanaannya.</p>
+              <div class="flex items-center justify-between">
+                <h4 class="font-title text-sm font-bold text-slate-900">Rekapitulasi Kehadiran Praktikan (${escapeHtml(curSummary.nama)})</h4>
+                <span class="text-xs font-mono font-bold text-slate-600">Presensi Total: ${curSummary.persenKehadiran}%</span>
               </div>
               <div class="overflow-x-auto rounded-lg border border-slate-200">
                 <table class="w-full text-left text-xs">
                   <thead class="bg-slate-900 text-white font-semibold">
                     <tr>
-                      <th class="p-3 w-12 text-center">No</th>
-                      <th class="p-3">Acara Praktikum</th>
-                      <th class="p-3 text-center">Status Kehadiran</th>
-                      <th class="p-3">Tanggal Pelaksanaan</th>
+                      <th class="p-2.5 w-10 text-center">No</th>
+                      <th class="p-2.5">Acara Praktikum</th>
+                      <th class="p-2.5 text-center">Status</th>
+                      <th class="p-2.5">Tanggal</th>
+                      <th class="p-2.5">Keterangan</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-100">
                     ${AppState.acaraList.map((ac, idx) => {
-                      const listK = AppState.grades.kehadiran[selectedNim] || [];
-                      const kData = listK.find(k => k.acaraId === ac.id) || { status: 'Hadir', tanggal: new Date().toISOString().split('T')[0] };
-                      const isHadir = (kData.status === 'Hadir' || kData.status === true || !kData.status || kData.status === 'Terlambat');
+                      const kData = listKehadiran.find(k => k.acaraId === ac.id) || { status: 'Hadir', tanggal: '-' };
+                      const st = kData.status || 'Hadir';
+                      const isSelected = ac.id === acara.id;
                       return `
-                        <tr class="hover:bg-slate-50 transition">
-                          <td class="p-3 text-center font-mono text-slate-400 font-medium">${idx + 1}</td>
-                          <td class="p-3 font-semibold text-slate-900">${escapeHtml(ac.nama)}</td>
-                          <td class="p-3 text-center">
-                            <label class="inline-flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-slate-200 hover:border-emerald-400 shadow-xs transition">
-                              <input type="checkbox" id="status-hadir-${ac.id}" ${isHadir ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d] cursor-pointer">
-                              <span class="text-xs font-semibold ${isHadir ? 'text-emerald-800' : 'text-slate-500'}">Hadir</span>
-                            </label>
+                        <tr class="${isSelected ? 'bg-teal-50/70 font-semibold' : 'hover:bg-slate-50'} transition">
+                          <td class="p-2.5 text-center font-mono text-slate-400">${idx + 1}</td>
+                          <td class="p-2.5">
+                            <span class="text-slate-900">${escapeHtml(ac.nama)}</span>
+                            ${isSelected ? '<span class="ml-1.5 text-[10px] bg-teal-600 text-white px-1.5 py-0.5 rounded font-sans font-normal">Sesi Terpilih</span>' : ''}
                           </td>
-                          <td class="p-3">
-                            <input type="date" id="tgl-hadir-${ac.id}" value="${kData.tanggal || new Date().toISOString().split('T')[0]}" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-mono font-medium focus:ring-1 focus:ring-[#56b29d]">
+                          <td class="p-2.5 text-center">
+                            <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                              st === 'Hadir' ? 'bg-emerald-100 text-emerald-800' :
+                              st === 'Sakit' ? 'bg-blue-100 text-blue-800' :
+                              st === 'Izin' ? 'bg-amber-100 text-amber-800' :
+                              'bg-rose-100 text-rose-800'
+                            }">${st === 'Absen' ? 'Absen (tdk hadir)' : st}</span>
                           </td>
+                          <td class="p-2.5 font-mono text-slate-600">${escapeHtml(kData.tanggal || '-')}</td>
+                          <td class="p-2.5 text-slate-500">${escapeHtml(kData.keterangan || '-')}</td>
                         </tr>
                       `;
                     }).join('')}
@@ -2916,7 +3054,7 @@ function renderManajemenPraktikanView() {
               <option value="all" ${AppState.filterKelompok === 'all' ? 'selected' : ''}>
                 Semua Kelompok (${AppState.praktikanList.length} Mhs)
               </option>
-              ${Array.from({length: jmlKelompok}, (_, i) => `Kelompok ${i+1}`).map(k => {
+              ${getKelompokList().map(k => {
                 const count = AppState.praktikanList.filter(p => p.kelompok === k).length;
                 return `
                   <option value="${k}" ${AppState.filterKelompok === k ? 'selected' : ''}>
@@ -3242,6 +3380,52 @@ function renderPengaturanView() {
               }).join('')}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- KARTU 2.5: KONTROL PENILAIAN & SUB-PENILAIAN AKTIF (WEWENANG KOORDINATOR) -->
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-3">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-teal-50 text-[#36786a] flex items-center justify-center shrink-0">
+              <i data-lucide="sliders" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <h3 class="font-title font-bold text-slate-900 text-base">Kontrol Penilaian & Sub-Penilaian Aktif (Wewenang Koordinator)</h3>
+              <p class="text-xs text-slate-500">Tentukan komponen penilaian dan sub-indikator aktif. Nilai persentase bobot menjadi acuan standar bagi seluruh Co.Ass.</p>
+            </div>
+          </div>
+          <button onclick="openModalAturEvaluasiKoordinator()" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-semibold py-2 px-3.5 rounded-lg text-xs transition flex items-center space-x-1.5 shadow-sm shrink-0">
+            <i data-lucide="settings-2" class="w-4 h-4"></i>
+            <span>Atur Komponen & Bobot Acuan</span>
+          </button>
+        </div>
+
+        <!-- Quick Indicator Badges -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+          ${(() => {
+            const ev = (AppState.config && AppState.config.evaluationConfig) || DEFAULT_EVALUATION_CONFIG;
+            const c = (ev && ev.components) || DEFAULT_EVALUATION_CONFIG.components;
+            const w = (AppState.config && AppState.config.weights) || DEFAULT_CONFIG.weights;
+            const items = [
+              { label: '1. Laporan', active: c.laporan !== false, weight: w.laporan ?? 35 },
+              { label: '2. Video', active: c.video !== false, weight: w.video ?? 10 },
+              { label: '3. Performa', active: c.performa !== false, weight: w.performa ?? 15 },
+              { label: '4. Sikap', active: c.sikap !== false, weight: w.sikap ?? 10 },
+              { label: '5. Format', active: c.formatLaporan !== false, weight: w.formatLaporan ?? 5 },
+              { label: '6. Responsi', active: c.responsi !== false, weight: w.responsi ?? 20 },
+              { label: '7. Kedisiplinan', active: c.k3Kedisiplinan !== false, weight: w.k3Kedisiplinan ?? 5 },
+              { label: '8. Kehadiran', active: c.kehadiran !== false, weight: null }
+            ];
+            return items.map(it => `
+              <div class="p-2.5 rounded-lg border ${it.active ? 'bg-slate-50 border-slate-200' : 'bg-rose-50/50 border-rose-200 opacity-60'} flex items-center justify-between">
+                <span class="font-medium text-slate-800">${it.label}</span>
+                <span class="font-mono font-bold text-[11px] ${it.active ? 'text-emerald-700' : 'text-rose-600'}">
+                  ${it.active ? (it.weight != null ? `${it.weight}%` : 'Aktif') : 'Nonaktif'}
+                </span>
+              </div>
+            `).join('');
+          })()}
         </div>
       </div>
 
@@ -4017,7 +4201,7 @@ function openModalTambahPraktikan() {
         <div>
           <label class="block font-semibold text-slate-700 mb-1">Kelompok Praktikum</label>
           <select id="modal-prak-kelompok" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-medium">
-            ${Array.from({length: jmlKelompok}, (_, i) => `Kelompok ${i+1}`).map(k => `
+            ${getKelompokList().map(k => `
               <option value="${k}">${k}</option>
             `).join('')}
           </select>
@@ -4101,7 +4285,7 @@ function editPraktikan(id) {
         <div>
           <label class="block font-semibold text-slate-700 mb-1">Kelompok</label>
           <select id="edit-prak-kelompok" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-medium">
-            ${Array.from({length: jmlKelompok}, (_, i) => `Kelompok ${i+1}`).map(k => `
+            ${getKelompokList().map(k => `
               <option value="${k}" ${p.kelompok === k ? 'selected' : ''}>${k}</option>
             `).join('')}
           </select>
@@ -4829,21 +5013,54 @@ function closeModal() {
 }
 
 function changeGradingKelompokFilter(kelompok) {
+  const searchInput = document.getElementById('search-praktikan-coass');
+  const query = searchInput ? searchInput.value : '';
+  handleSearchPraktikanCoAss(query);
+}
+
+function handleSearchPraktikanCoAss(query) {
+  const q = (query || '').toLowerCase().trim();
+  const selKel = document.getElementById('select-kelompok-grading')?.value || 'all';
   const selPraktikan = document.getElementById('select-praktikan-coass');
-  if (!selPraktikan) return;
-  const filtered = kelompok === 'all' 
-    ? AppState.praktikanList 
-    : AppState.praktikanList.filter(p => p.kelompok === kelompok);
-  
-  selPraktikan.innerHTML = filtered.map(p => `
-    <option value="${escapeHtml(p.nim)}">
-      ${escapeHtml(p.nim)} - ${escapeHtml(p.nama)} (${escapeHtml(p.kelompok)})
-    </option>
-  `).join('');
-  
-  if (filtered.length > 0) {
-    changeSelectedPraktikan(filtered[0].nim);
+  const clearBtn = document.getElementById('btn-clear-search-coass');
+  if (clearBtn) {
+    if (q) clearBtn.classList.remove('hidden');
+    else clearBtn.classList.add('hidden');
   }
+  if (!selPraktikan) return;
+
+  let filtered = AppState.praktikanList;
+  if (selKel !== 'all') {
+    filtered = filtered.filter(p => p.kelompok === selKel);
+  }
+  if (q) {
+    filtered = filtered.filter(p => 
+      p.nama.toLowerCase().includes(q) || 
+      p.nim.toLowerCase().includes(q) || 
+      (p.kelompok && p.kelompok.toLowerCase().includes(q))
+    );
+  }
+
+  if (filtered.length === 0) {
+    selPraktikan.innerHTML = `<option value="">-- Tidak ada praktikan ditemukan --</option>`;
+  } else {
+    selPraktikan.innerHTML = filtered.map(p => `
+      <option value="${escapeHtml(p.nim)}" ${p.nim === AppState.selectedPraktikanNIM ? 'selected' : ''}>
+        ${escapeHtml(p.nim)} - ${escapeHtml(p.nama)} (${escapeHtml(p.kelompok)})
+      </option>
+    `).join('');
+    
+    // Jika NIM yang sedang aktif tidak ada dalam daftar yang difilter, pilih mahasiswa pertama
+    if (!filtered.some(p => p.nim === AppState.selectedPraktikanNIM)) {
+      changeSelectedPraktikan(filtered[0].nim);
+    }
+  }
+}
+
+function clearSearchPraktikanCoAss() {
+  const searchInput = document.getElementById('search-praktikan-coass');
+  if (searchInput) searchInput.value = '';
+  handleSearchPraktikanCoAss('');
 }
 
 /**
@@ -4990,18 +5207,25 @@ function saveCurrentGradingForm(nim, acaraId) {
     catatan: k3Catatan
   };
 
-  // 8. Simpan Kehadiran Tiap Acara (Ceklist & Tanggal)
-  AppState.grades.kehadiran[nim] = AppState.acaraList.map(ac => {
-    const statusEl = document.getElementById(`status-hadir-${ac.id}`);
-    const tglEl = document.getElementById(`tgl-hadir-${ac.id}`);
-    const isChecked = statusEl ? (statusEl.type === 'checkbox' ? statusEl.checked : (statusEl.value === 'Hadir')) : true;
-    return {
-      acaraId: ac.id,
-      status: isChecked ? 'Hadir' : 'Tidak Hadir',
-      tanggal: (tglEl && tglEl.value) ? tglEl.value : new Date().toISOString().split('T')[0],
-      keterangan: isChecked ? 'Hadir' : 'Tidak Hadir'
-    };
-  });
+  // 8. Simpan Kehadiran Tiap Acara (Ceklist, Pilihan Status & Tanggal)
+  if (!AppState.grades.kehadiran[nim]) AppState.grades.kehadiran[nim] = [];
+  const selectedStatusEl = document.querySelector('input[name="status-kehadiran-acara"]:checked');
+  const selectedStatusVal = selectedStatusEl ? selectedStatusEl.value : 'Hadir';
+  const selectedTglVal = document.getElementById('tgl-hadir-acara')?.value || new Date().toISOString().split('T')[0];
+  const selectedKetVal = document.getElementById('ket-hadir-acara')?.value || '';
+
+  const existKIdx = AppState.grades.kehadiran[nim].findIndex(k => k.acaraId === acaraId);
+  const curKObj = {
+    acaraId: acaraId,
+    status: selectedStatusVal,
+    tanggal: selectedTglVal,
+    keterangan: selectedKetVal || selectedStatusVal
+  };
+  if (existKIdx >= 0) {
+    AppState.grades.kehadiran[nim][existKIdx] = curKObj;
+  } else {
+    AppState.grades.kehadiran[nim].push(curKObj);
+  }
 
   saveCurrentPraktikumState();
   saveStateToStorage();
@@ -5027,6 +5251,833 @@ function saveDriveSettings() {
 // Fallback jika saveGeneralSettings dipanggil
 function saveGeneralSettings() {
   saveDriveSettings();
+}
+
+// ============================================================================
+// 12.2 MODAL KONTROL EVALUASI & SUB-PENILAIAN AKTIF (WEWENANG KOORDINATOR)
+// ============================================================================
+
+function openModalAturEvaluasiKoordinator() {
+  const modalContainer = document.getElementById('modal-container');
+  const modalContent = document.getElementById('modal-content');
+  if (!modalContainer || !modalContent) return;
+
+  const evalCfg = (AppState.config && AppState.config.evaluationConfig) || DEFAULT_EVALUATION_CONFIG;
+  const compCfg = (evalCfg && evalCfg.components) || DEFAULT_EVALUATION_CONFIG.components;
+  const subCfg = (evalCfg && evalCfg.subIndicators) || DEFAULT_EVALUATION_CONFIG.subIndicators;
+  const weights = (AppState.config && AppState.config.weights) || DEFAULT_CONFIG.weights;
+
+  modalContent.innerHTML = `
+    <div class="space-y-5 max-w-2xl mx-auto">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-200">
+        <div>
+          <h3 class="font-title text-base font-bold text-slate-900">Kontrol Penilaian & Sub-Penilaian Aktif</h3>
+          <p class="text-xs text-slate-500">Wewenang Koordinator: Tentukan komponen & sub-indikator aktif serta persentase bobot acuan standar.</p>
+        </div>
+        <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="bg-blue-50/80 p-3.5 rounded-xl border border-blue-200 text-xs text-blue-900 space-y-1">
+        <div class="font-bold flex items-center space-x-1.5">
+          <i data-lucide="info" class="w-4 h-4 text-blue-600"></i>
+          <span>Informasi Pengaturan Koordinator:</span>
+        </div>
+        <p class="text-blue-800">
+          • Komponen atau sub-indikator yang dinonaktifkan di sini otomatis dikecualikan dari akumulasi nilai.<br>
+          • Persentase bobot acuan ini menjadi template awal bagi Co.Ass. Co.Ass tetap memiliki fleksibilitas mengubah persentase (bisa &gt; 100%) untuk memberi nilai apresiasi.<br>
+          • Pengaturan ini bersifat menetap sampai Koordinator mengubahnya kembali.
+        </p>
+      </div>
+
+      <!-- Komponen 1: Laporan Substansi -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-laporan" ${compCfg.laporan !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>1. Penilaian Laporan Substansi</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-laporan" value="${weights.laporan ?? 35}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Laporan:</span>
+          ${INDIKATOR_LAPORAN.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-laporan-${ind.id}" ${(!subCfg.laporan || subCfg.laporan[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Komponen 2: Video Praktikum -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-video" ${compCfg.video !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>2. Penilaian Video Praktikum</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-video" value="${weights.video ?? 10}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Video:</span>
+          ${INDIKATOR_VIDEO.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-video-${ind.id}" ${(!subCfg.video || subCfg.video[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Komponen 3: Performa Praktikan -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-performa" ${compCfg.performa !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>3. Penilaian Performa Praktikan</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-performa" value="${weights.performa ?? 15}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Performa:</span>
+          ${INDIKATOR_PERFORMA.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-performa-${ind.id}" ${(!subCfg.performa || subCfg.performa[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Komponen 4: Sikap Belajar & Apresiasi -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-sikap" ${compCfg.sikap !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>4. Penilaian Sikap Belajar & Apresiasi</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-sikap" value="${weights.sikap ?? 10}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Sikap:</span>
+          ${INDIKATOR_SIKAP.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-sikap-${ind.id}" ${(!subCfg.sikap || subCfg.sikap[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Komponen 5: Format Laporan -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-formatLaporan" ${compCfg.formatLaporan !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>5. Penilaian Format Laporan</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-formatLaporan" value="${weights.formatLaporan ?? 5}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Format Laporan:</span>
+          ${INDIKATOR_FORMAT.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-formatLaporan-${ind.id}" ${(!subCfg.formatLaporan || subCfg.formatLaporan[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Komponen 6: Responsi Praktikum -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-responsi" ${compCfg.responsi !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>6. Penilaian Responsi Praktikum (Terpisah & Sekali Isi)</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-responsi" value="${weights.responsi ?? 20}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Responsi:</span>
+          ${INDIKATOR_RESPONSI.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-responsi-${ind.id}" ${(!subCfg.responsi || subCfg.responsi[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+          <div class="pt-1 flex flex-col sm:flex-row sm:items-center gap-3">
+            <label class="flex items-center space-x-2 text-teal-800 font-semibold cursor-pointer">
+              <input type="checkbox" id="koor-sub-responsi-videoIndividu" ${(subCfg.responsi && subCfg.responsi.videoIndividu) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>Nilai Video Individu Responsi (Opsional)</span>
+            </label>
+            <label class="flex items-center space-x-2 text-teal-800 font-semibold cursor-pointer">
+              <input type="checkbox" id="koor-sub-responsi-videoKelompok" ${(subCfg.responsi && subCfg.responsi.videoKelompok) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>Nilai Video Kelompok Responsi (Opsional)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Komponen 7: Kedisiplinan & K3 -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+          <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+            <input type="checkbox" id="koor-comp-k3Kedisiplinan" ${compCfg.k3Kedisiplinan !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+            <span>7. Penilaian Kedisiplinan & K3</span>
+          </label>
+          <div class="flex items-center space-x-1 text-xs">
+            <span class="text-slate-500">Bobot Acuan:</span>
+            <input type="number" min="0" max="100" id="koor-weight-k3Kedisiplinan" value="${weights.k3Kedisiplinan ?? 5}" class="w-14 text-center py-1 rounded border border-slate-300 font-mono font-bold text-xs">
+            <span class="text-slate-400 font-bold">%</span>
+          </div>
+        </div>
+        <div class="text-xs space-y-2 pl-4">
+          <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Sub-Indikator Kedisiplinan:</span>
+          ${INDIKATOR_K3.map(ind => `
+            <label class="flex items-center space-x-2 text-slate-700 cursor-pointer">
+              <input type="checkbox" id="koor-sub-k3Kedisiplinan-${ind.id}" ${(!subCfg.k3Kedisiplinan || subCfg.k3Kedisiplinan[ind.id] !== false) ? 'checked' : ''} class="rounded text-[#56b29d] focus:ring-[#56b29d]">
+              <span>${escapeHtml(ind.nama)} (${ind.bobot}%)</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Komponen 8: Kehadiran -->
+      <div class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 flex items-center justify-between">
+        <label class="inline-flex items-center space-x-2 cursor-pointer font-bold text-slate-900 text-xs">
+          <input type="checkbox" id="koor-comp-kehadiran" ${compCfg.kehadiran !== false ? 'checked' : ''} class="w-4 h-4 rounded text-[#56b29d] focus:ring-[#56b29d]">
+          <span>8. Presensi Kehadiran Tiap Acara (Hadir, Sakit, Izin, Absen)</span>
+        </label>
+        <span class="text-xs font-semibold text-slate-400">Presensi & Syarat Ujian</span>
+      </div>
+
+      <!-- Tombol Aksi Simpan -->
+      <div class="flex items-center justify-end space-x-2 pt-3 border-t border-slate-200">
+        <button type="button" onclick="closeModal()" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition">Batal</button>
+        <button type="button" onclick="saveEvaluasiKoordinatorConfig()" class="bg-[#56b29d] hover:bg-[#469c88] text-white font-bold py-2 px-5 rounded-xl shadow-sm text-xs transition flex items-center space-x-2">
+          <i data-lucide="check" class="w-4 h-4"></i>
+          <span>Simpan Konfigurasi Koordinator</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  modalContainer.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function saveEvaluasiKoordinatorConfig() {
+  const newCompCfg = {
+    laporan: document.getElementById('koor-comp-laporan')?.checked ?? true,
+    video: document.getElementById('koor-comp-video')?.checked ?? true,
+    performa: document.getElementById('koor-comp-performa')?.checked ?? true,
+    sikap: document.getElementById('koor-comp-sikap')?.checked ?? true,
+    formatLaporan: document.getElementById('koor-comp-formatLaporan')?.checked ?? true,
+    responsi: document.getElementById('koor-comp-responsi')?.checked ?? true,
+    k3Kedisiplinan: document.getElementById('koor-comp-k3Kedisiplinan')?.checked ?? true,
+    kehadiran: document.getElementById('koor-comp-kehadiran')?.checked ?? true
+  };
+
+  const newSubCfg = {
+    laporan: {},
+    video: {},
+    performa: {},
+    sikap: {},
+    formatLaporan: {},
+    responsi: {},
+    k3Kedisiplinan: {}
+  };
+
+  INDIKATOR_LAPORAN.forEach(ind => {
+    newSubCfg.laporan[ind.id] = document.getElementById(`koor-sub-laporan-${ind.id}`)?.checked ?? true;
+  });
+  INDIKATOR_VIDEO.forEach(ind => {
+    newSubCfg.video[ind.id] = document.getElementById(`koor-sub-video-${ind.id}`)?.checked ?? true;
+  });
+  INDIKATOR_PERFORMA.forEach(ind => {
+    newSubCfg.performa[ind.id] = document.getElementById(`koor-sub-performa-${ind.id}`)?.checked ?? true;
+  });
+  INDIKATOR_SIKAP.forEach(ind => {
+    newSubCfg.sikap[ind.id] = document.getElementById(`koor-sub-sikap-${ind.id}`)?.checked ?? true;
+  });
+  INDIKATOR_FORMAT.forEach(ind => {
+    newSubCfg.formatLaporan[ind.id] = document.getElementById(`koor-sub-formatLaporan-${ind.id}`)?.checked ?? true;
+  });
+  INDIKATOR_RESPONSI.forEach(ind => {
+    newSubCfg.responsi[ind.id] = document.getElementById(`koor-sub-responsi-${ind.id}`)?.checked ?? true;
+  });
+  newSubCfg.responsi.videoIndividu = document.getElementById('koor-sub-responsi-videoIndividu')?.checked ?? false;
+  newSubCfg.responsi.videoKelompok = document.getElementById('koor-sub-responsi-videoKelompok')?.checked ?? false;
+
+  INDIKATOR_K3.forEach(ind => {
+    newSubCfg.k3Kedisiplinan[ind.id] = document.getElementById(`koor-sub-k3Kedisiplinan-${ind.id}`)?.checked ?? true;
+  });
+
+  const newWeights = {
+    laporan: parseFloat(document.getElementById('koor-weight-laporan')?.value) || 0,
+    video: parseFloat(document.getElementById('koor-weight-video')?.value) || 0,
+    performa: parseFloat(document.getElementById('koor-weight-performa')?.value) || 0,
+    sikap: parseFloat(document.getElementById('koor-weight-sikap')?.value) || 0,
+    formatLaporan: parseFloat(document.getElementById('koor-weight-formatLaporan')?.value) || 0,
+    responsi: parseFloat(document.getElementById('koor-weight-responsi')?.value) || 0,
+    k3Kedisiplinan: parseFloat(document.getElementById('koor-weight-k3Kedisiplinan')?.value) || 0
+  };
+
+  if (!AppState.config.evaluationConfig) AppState.config.evaluationConfig = {};
+  AppState.config.evaluationConfig.components = newCompCfg;
+  AppState.config.evaluationConfig.subIndicators = newSubCfg;
+  AppState.config.weights = newWeights;
+
+  saveCurrentPraktikumState();
+  saveStateToStorage();
+  closeModal();
+  renderApp();
+  showToast('Konfigurasi penilaian aktif & bobot acuan koordinator berhasil disimpan!', 'success');
+  triggerAutoCloudSync();
+}
+
+// ============================================================================
+// 12.3 INPUT NILAI VIA FILE EXCEL TIAP KELOMPOK
+// ============================================================================
+
+let _excelParsedBuffer = [];
+
+function openModalExcelNilaiKelompok() {
+  const modalContainer = document.getElementById('modal-container');
+  const modalContent = document.getElementById('modal-content');
+  if (!modalContainer || !modalContent) return;
+
+  _excelParsedBuffer = [];
+  const kelompokList = getKelompokList();
+  const selGrading = document.getElementById('select-kelompok-grading')?.value;
+  const selectedKel = (selGrading && selGrading !== 'all') ? selGrading : (kelompokList[0] || 'Kelompok 1');
+  const selectedAcaraId = parseInt(AppState.selectedAcaraId) || 1;
+
+  modalContent.innerHTML = `
+    <div class="space-y-5 max-w-2xl mx-auto">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-200">
+        <div>
+          <h3 class="font-title text-base font-bold text-slate-900">Input Nilai Menggunakan File Excel (.xlsx)</h3>
+          <p class="text-xs text-slate-500">Unduh format template Excel per kelompok & acara, isi nilai, lalu unggah untuk menyimpan sekaligus.</p>
+        </div>
+        <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Pemilihan Kelompok & Acara -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Pilih Kelompok Praktikum</label>
+          <select id="modal-excel-kelompok" onchange="updateExcelModalStudentCount()" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-[#56b29d]">
+            ${kelompokList.map(k => `
+              <option value="${escapeHtml(k)}" ${k === selectedKel ? 'selected' : ''}>${escapeHtml(k)}</option>
+            `).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Pilih Acara Praktikum</label>
+          <select id="modal-excel-acara" onchange="updateExcelModalStudentCount()" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-[#56b29d]">
+            ${AppState.acaraList.map(a => `
+              <option value="${a.id}" ${a.id === selectedAcaraId ? 'selected' : ''}>${escapeHtml(a.nama)}</option>
+            `).join('')}
+          </select>
+        </div>
+        <div class="sm:col-span-2 text-xs text-slate-500 flex items-center justify-between pt-1">
+          <span id="modal-excel-mhs-count">Memuat data kelompok...</span>
+          <span class="text-emerald-700 font-semibold font-mono text-[11px]">Format: .xlsx (Microsoft Excel)</span>
+        </div>
+      </div>
+
+      <!-- Langkah 1: Unduh Format Template -->
+      <div class="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2">
+        <div class="flex items-center space-x-2 font-bold text-emerald-950 text-xs">
+          <span class="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[11px]">1</span>
+          <span>Unduh Template Format Excel Kelompok Terpilih</span>
+        </div>
+        <p class="text-xs text-emerald-900/80">File template Excel sudah otomatis berisi seluruh nama & NIM mahasiswa kelompok ini beserta nilai yang sudah ada (jika pernah dinilai).</p>
+        <button type="button" onclick="handleDownloadTemplateNilaiKelompok()" class="mt-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded-lg text-xs shadow-sm transition flex items-center space-x-2">
+          <i data-lucide="download" class="w-4 h-4"></i>
+          <span>Unduh Template Excel (.xlsx)</span>
+        </button>
+      </div>
+
+      <!-- Langkah 2: Unggah File Excel yang Telah Diisi -->
+      <div class="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-3">
+        <div class="flex items-center space-x-2 font-bold text-slate-900 text-xs">
+          <span class="w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center text-[11px]">2</span>
+          <span>Unggah File Excel yang Sudah Diisi Nilai</span>
+        </div>
+        <input type="file" id="modal-excel-file-input" accept=".xlsx, .xls, .csv" onchange="handleExcelNilaiFileUpload(event)" class="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 cursor-pointer border border-slate-200 rounded-lg p-2 bg-white">
+      </div>
+
+      <!-- Preview Data Impor -->
+      <div id="modal-excel-preview-container" class="hidden space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-bold text-slate-800">Pratinjau Nilai Mahasiswa dari Excel:</span>
+          <span class="text-slate-500 font-mono text-[11px]" id="modal-excel-preview-stats"></span>
+        </div>
+        <div class="max-h-48 overflow-y-auto rounded-lg border border-slate-200">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-900 text-white font-semibold sticky top-0">
+              <tr>
+                <th class="p-2">NIM</th>
+                <th class="p-2">Nama</th>
+                <th class="p-2 text-center">Status</th>
+                <th class="p-2 text-right">Laporan</th>
+                <th class="p-2 text-right">Video</th>
+                <th class="p-2 text-right">Performa</th>
+                <th class="p-2 text-right">Sikap</th>
+                <th class="p-2 text-right">Responsi</th>
+              </tr>
+            </thead>
+            <tbody id="modal-excel-preview-tbody" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tombol Aksi Simpan -->
+      <div class="flex items-center justify-end space-x-2 pt-3 border-t border-slate-200">
+        <button type="button" onclick="closeModal()" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition">Batal</button>
+        <button type="button" id="btn-apply-excel-nilai" onclick="applyImportedExcelNilai()" disabled class="bg-[#56b29d] opacity-50 cursor-not-allowed text-white font-bold py-2 px-5 rounded-xl shadow-sm text-xs transition flex items-center space-x-2">
+          <i data-lucide="check" class="w-4 h-4"></i>
+          <span>Terapkan & Simpan Nilai ke Sistem</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  modalContainer.classList.remove('hidden');
+  lucide.createIcons();
+  updateExcelModalStudentCount();
+}
+
+function updateExcelModalStudentCount() {
+  const kel = document.getElementById('modal-excel-kelompok')?.value || '';
+  const count = AppState.praktikanList.filter(p => p.kelompok === kel).length;
+  const countEl = document.getElementById('modal-excel-mhs-count');
+  if (countEl) {
+    countEl.innerHTML = `Terdaftar <strong>${count}</strong> mahasiswa di <strong>${escapeHtml(kel)}</strong>`;
+  }
+}
+
+function handleDownloadTemplateNilaiKelompok() {
+  if (typeof XLSX === 'undefined') {
+    alert('Modul Excel (SheetJS) belum selesai dimuat. Silakan tunggu sesaat.');
+    return;
+  }
+  const kel = document.getElementById('modal-excel-kelompok')?.value || 'Kelompok 1';
+  const acaraId = parseInt(document.getElementById('modal-excel-acara')?.value) || 1;
+  const acara = AppState.acaraList.find(a => a.id === acaraId) || AppState.acaraList[0];
+
+  const students = AppState.praktikanList.filter(p => p.kelompok === kel);
+  if (students.length === 0) {
+    alert(`Tidak ada mahasiswa yang terdaftar di ${kel}.`);
+    return;
+  }
+
+  const wb = XLSX.utils.book_new();
+
+  const headers = [
+    'No',
+    'NIM',
+    'Nama Mahasiswa',
+    'Kelompok',
+    'Status Kehadiran (Hadir/Sakit/Izin/Absen)',
+    'Nilai Laporan (0-100)',
+    'Catatan Laporan',
+    'Nilai Video (0-100/NA)',
+    'Catatan Video',
+    'Nilai Performa (0-100)',
+    'Nilai Sikap (0-100)',
+    'Nilai Format (0-100)',
+    'Nilai Responsi (0-100)',
+    'Nilai Kedisiplinan (0-100)',
+    'Catatan Evaluasi / Rekomendasi'
+  ];
+
+  const rows = [headers];
+
+  students.forEach((s, idx) => {
+    const nim = s.nim;
+    const lap = (AppState.grades.laporan[nim] && AppState.grades.laporan[nim][acaraId]) || {};
+    const vid = (AppState.grades.video[nim] && AppState.grades.video[nim][acaraId]) || {};
+    const perf = AppState.grades.performa[nim] || {};
+    const sik = AppState.grades.sikap[nim] || {};
+    const fmt = AppState.grades.formatLaporan[nim] || {};
+    const resp = AppState.grades.responsi[nim] || (AppState.globalResponsi && AppState.globalResponsi[nim]) || {};
+    const k3 = AppState.grades.k3Kedisiplinan[nim] || {};
+    const listK = AppState.grades.kehadiran[nim] || [];
+    const kData = listK.find(k => k.acaraId === acaraId) || { status: 'Hadir' };
+    const catEv = AppState.grades.catatanEvaluasi[nim] || {};
+
+    rows.push([
+      idx + 1,
+      s.nim,
+      s.nama,
+      s.kelompok,
+      kData.status || 'Hadir',
+      lap.total != null ? lap.total : '',
+      lap.catatan || '',
+      vid.isNA ? 'NA' : (vid.total != null ? vid.total : ''),
+      vid.catatan || '',
+      perf.total != null ? perf.total : '',
+      sik.total != null ? sik.total : '',
+      fmt.total != null ? fmt.total : '',
+      resp.total != null ? resp.total : '',
+      k3.total != null ? k3.total : '',
+      catEv.rekomendasi || catEv.kelebihan || ''
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [
+    { wch: 6 },
+    { wch: 14 },
+    { wch: 28 },
+    { wch: 14 },
+    { wch: 38 },
+    { wch: 20 },
+    { wch: 28 },
+    { wch: 20 },
+    { wch: 28 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 35 }
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, `Nilai_${kel.replace(/\s+/g,'')}`);
+  const cleanKel = kel.replace(/[^a-zA-Z0-9]/g, '_');
+  const cleanAcara = (acara.code || `Acara_${acaraId}`).replace(/[^a-zA-Z0-9]/g, '_');
+  XLSX.writeFile(wb, `Template_Nilai_${cleanKel}_${cleanAcara}.xlsx`);
+  showToast(`Template Excel untuk ${kel} (${acara.nama}) berhasil diunduh!`, 'success');
+}
+
+function handleExcelNilaiFileUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(evt) {
+    try {
+      const data = new Uint8Array(evt.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+
+      if (jsonRows.length < 2) {
+        alert('File Excel kosong atau tidak memiliki baris data mahasiswa.');
+        return;
+      }
+
+      const headers = jsonRows[0].map(h => String(h || '').trim().toLowerCase());
+      const nimColIdx = headers.findIndex(h => h.includes('nim'));
+      const namaColIdx = headers.findIndex(h => h.includes('nama'));
+      const hadStatusColIdx = headers.findIndex(h => h.includes('kehadiran') || h.includes('status'));
+      const lapColIdx = headers.findIndex(h => h.includes('laporan') && (h.includes('nilai') || h.includes('0-100')));
+      const lapCatColIdx = headers.findIndex(h => h.includes('catatan laporan'));
+      const vidColIdx = headers.findIndex(h => h.includes('video') && (h.includes('nilai') || h.includes('0-100')));
+      const vidCatColIdx = headers.findIndex(h => h.includes('catatan video'));
+      const perfColIdx = headers.findIndex(h => h.includes('performa'));
+      const sikColIdx = headers.findIndex(h => h.includes('sikap'));
+      const fmtColIdx = headers.findIndex(h => h.includes('format'));
+      const respColIdx = headers.findIndex(h => h.includes('responsi'));
+      const k3ColIdx = headers.findIndex(h => h.includes('kedisiplinan') || h.includes('k3'));
+      const catUmumColIdx = headers.findIndex(h => h.includes('evaluasi') || h.includes('rekomendasi') || h.includes('catatan umum'));
+
+      if (nimColIdx === -1) {
+        alert('Kolom "NIM" tidak ditemukan di dalam file Excel. Mohon gunakan template yang disediakan.');
+        return;
+      }
+
+      _excelParsedBuffer = [];
+      const tbody = document.getElementById('modal-excel-preview-tbody');
+      if (tbody) tbody.innerHTML = '';
+
+      for (let i = 1; i < jsonRows.length; i++) {
+        const row = jsonRows[i];
+        if (!row || row.length === 0) continue;
+        const rawNim = String(row[nimColIdx] || '').trim();
+        if (!rawNim) continue;
+
+        const nama = namaColIdx !== -1 ? String(row[namaColIdx] || '').trim() : '';
+        const statusHadir = hadStatusColIdx !== -1 ? String(row[hadStatusColIdx] || 'Hadir').trim() : 'Hadir';
+        const rawLap = lapColIdx !== -1 ? row[lapColIdx] : '';
+        const rawVid = vidColIdx !== -1 ? row[vidColIdx] : '';
+        const rawPerf = perfColIdx !== -1 ? row[perfColIdx] : '';
+        const rawSik = sikColIdx !== -1 ? row[sikColIdx] : '';
+        const rawFmt = fmtColIdx !== -1 ? row[fmtColIdx] : '';
+        const rawResp = respColIdx !== -1 ? row[respColIdx] : '';
+        const rawK3 = k3ColIdx !== -1 ? row[k3ColIdx] : '';
+        const catLap = lapCatColIdx !== -1 ? String(row[lapCatColIdx] || '') : '';
+        const catVid = vidCatColIdx !== -1 ? String(row[vidCatColIdx] || '') : '';
+        const catUmum = catUmumColIdx !== -1 ? String(row[catUmumColIdx] || '') : '';
+
+        const parseScore = val => {
+          if (val == null || val === '') return null;
+          const n = parseFloat(val);
+          return isNaN(n) ? null : Math.max(0, Math.min(100, n));
+        };
+
+        const item = {
+          nim: rawNim,
+          nama: nama,
+          statusHadir: statusHadir,
+          nilaiLaporan: parseScore(rawLap),
+          catatanLaporan: catLap,
+          nilaiVideo: String(rawVid).toUpperCase() === 'NA' ? 'NA' : parseScore(rawVid),
+          catatanVideo: catVid,
+          nilaiPerforma: parseScore(rawPerf),
+          nilaiSikap: parseScore(rawSik),
+          nilaiFormat: parseScore(rawFmt),
+          nilaiResponsi: parseScore(rawResp),
+          nilaiKedisiplinan: parseScore(rawK3),
+          catatanUmum: catUmum
+        };
+
+        _excelParsedBuffer.push(item);
+
+        if (tbody) {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-50 border-b border-slate-100';
+          tr.innerHTML = `
+            <td class="p-2 font-mono font-semibold">${escapeHtml(item.nim)}</td>
+            <td class="p-2">${escapeHtml(item.nama || '-')}</td>
+            <td class="p-2 text-center">
+              <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${
+                item.statusHadir === 'Hadir' ? 'bg-emerald-100 text-emerald-800' :
+                item.statusHadir === 'Sakit' ? 'bg-blue-100 text-blue-800' :
+                item.statusHadir === 'Izin' ? 'bg-amber-100 text-amber-800' :
+                'bg-rose-100 text-rose-800'
+              }">${escapeHtml(item.statusHadir)}</span>
+            </td>
+            <td class="p-2 text-right font-mono">${item.nilaiLaporan != null ? item.nilaiLaporan : '-'}</td>
+            <td class="p-2 text-right font-mono">${item.nilaiVideo != null ? item.nilaiVideo : '-'}</td>
+            <td class="p-2 text-right font-mono">${item.nilaiPerforma != null ? item.nilaiPerforma : '-'}</td>
+            <td class="p-2 text-right font-mono">${item.nilaiSikap != null ? item.nilaiSikap : '-'}</td>
+            <td class="p-2 text-right font-mono">${item.nilaiResponsi != null ? item.nilaiResponsi : '-'}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+      }
+
+      const previewCont = document.getElementById('modal-excel-preview-container');
+      if (previewCont) previewCont.classList.remove('hidden');
+
+      const statsEl = document.getElementById('modal-excel-preview-stats');
+      if (statsEl) statsEl.textContent = `${_excelParsedBuffer.length} mahasiswa terbaca`;
+
+      const applyBtn = document.getElementById('btn-apply-excel-nilai');
+      if (applyBtn && _excelParsedBuffer.length > 0) {
+        applyBtn.removeAttribute('disabled');
+        applyBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+      showToast(`${_excelParsedBuffer.length} data mahasiswa berhasil dimuat dari file Excel!`, 'info');
+    } catch (err) {
+      console.error('Error parsing Excel:', err);
+      alert('Gagal membaca file Excel. Pastikan format file sesuai.');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function applyImportedExcelNilai() {
+  if (!_excelParsedBuffer || _excelParsedBuffer.length === 0) {
+    alert('Tidak ada data nilai yang siap diterapkan.');
+    return;
+  }
+
+  const acaraId = parseInt(document.getElementById('modal-excel-acara')?.value) || 1;
+  const acara = AppState.acaraList.find(a => a.id === acaraId) || AppState.acaraList[0];
+  const penilaiNama = (AppState.currentUser && AppState.currentUser.data && AppState.currentUser.data.nama) || 'Co.Ass';
+  let updatedCount = 0;
+
+  _excelParsedBuffer.forEach(item => {
+    const nim = item.nim;
+    const student = AppState.praktikanList.find(p => p.nim === nim);
+    if (!student) return;
+
+    updatedCount++;
+
+    // 1. Laporan
+    if (item.nilaiLaporan != null) {
+      if (!AppState.grades.laporan[nim]) AppState.grades.laporan[nim] = {};
+      const curScores = (AppState.grades.laporan[nim][acaraId] && AppState.grades.laporan[nim][acaraId].scores) || {};
+      INDIKATOR_LAPORAN.forEach(ind => {
+        curScores[ind.id] = item.nilaiLaporan;
+      });
+      AppState.grades.laporan[nim][acaraId] = {
+        aktif: true,
+        checklist: { lap_1: true, lap_2: true, lap_3: true },
+        scores: curScores,
+        total: item.nilaiLaporan,
+        catatan: item.catatanLaporan || (AppState.grades.laporan[nim][acaraId] ? AppState.grades.laporan[nim][acaraId].catatan : ''),
+        tanggal: new Date().toISOString().split('T')[0],
+        penilai: penilaiNama
+      };
+    }
+
+    // 2. Video
+    if (item.nilaiVideo != null) {
+      if (!AppState.grades.video[nim]) AppState.grades.video[nim] = {};
+      const isNA = item.nilaiVideo === 'NA' || !acara.wajibVideo;
+      const vScore = isNA ? 0 : parseFloat(item.nilaiVideo) || 0;
+      const curScores = (AppState.grades.video[nim][acaraId] && AppState.grades.video[nim][acaraId].scores) || {};
+      INDIKATOR_VIDEO.forEach(ind => {
+        curScores[ind.id] = vScore;
+      });
+      AppState.grades.video[nim][acaraId] = {
+        aktif: true,
+        isNA: isNA,
+        checklist: { vid_1: true, vid_2: true },
+        scores: curScores,
+        total: vScore,
+        catatan: item.catatanVideo || (AppState.grades.video[nim][acaraId] ? AppState.grades.video[nim][acaraId].catatan : '')
+      };
+    }
+
+    // 3. Performa
+    if (item.nilaiPerforma != null) {
+      const curScores = (AppState.grades.performa[nim] && AppState.grades.performa[nim].scores) || {};
+      INDIKATOR_PERFORMA.forEach(ind => {
+        curScores[ind.id] = item.nilaiPerforma;
+      });
+      AppState.grades.performa[nim] = {
+        aktif: true,
+        checklist: { perf_1: true, perf_7: true, perf_8: true },
+        scores: curScores,
+        total: item.nilaiPerforma,
+        catatan: (AppState.grades.performa[nim] ? AppState.grades.performa[nim].catatan : '')
+      };
+    }
+
+    // 4. Sikap
+    if (item.nilaiSikap != null) {
+      const curScores = (AppState.grades.sikap[nim] && AppState.grades.sikap[nim].scores) || {};
+      INDIKATOR_SIKAP.forEach(ind => {
+        curScores[ind.id] = item.nilaiSikap;
+      });
+      AppState.grades.sikap[nim] = {
+        aktif: true,
+        checklist: { sik_1: true, sik_3: true },
+        scores: curScores,
+        total: item.nilaiSikap,
+        catatan: (AppState.grades.sikap[nim] ? AppState.grades.sikap[nim].catatan : '')
+      };
+    }
+
+    // 5. Format Laporan
+    if (item.nilaiFormat != null) {
+      const curScores = (AppState.grades.formatLaporan[nim] && AppState.grades.formatLaporan[nim].scores) || {};
+      INDIKATOR_FORMAT.forEach(ind => {
+        curScores[ind.id] = item.nilaiFormat;
+      });
+      AppState.grades.formatLaporan[nim] = {
+        aktif: true,
+        checklist: { fmt_1: true, fmt_5: true, fmt_8: true },
+        scores: curScores,
+        total: item.nilaiFormat,
+        catatan: (AppState.grades.formatLaporan[nim] ? AppState.grades.formatLaporan[nim].catatan : '')
+      };
+    }
+
+    // 6. Responsi
+    if (item.nilaiResponsi != null) {
+      const curScores = (AppState.grades.responsi[nim] && AppState.grades.responsi[nim].scores) || {};
+      INDIKATOR_RESPONSI.forEach(ind => {
+        curScores[ind.id] = item.nilaiResponsi;
+      });
+      const respObj = {
+        aktif: true,
+        checklist: { resp_1: true, resp_5: true },
+        scores: curScores,
+        videoIndividu: { aktif: false, predikat: 'A', skor: 95 },
+        videoKelompok: { aktif: false, predikat: 'A', skor: 95 },
+        total: item.nilaiResponsi,
+        catatan: (AppState.grades.responsi[nim] ? AppState.grades.responsi[nim].catatan : '')
+      };
+      AppState.grades.responsi[nim] = respObj;
+      if (!AppState.globalResponsi) AppState.globalResponsi = {};
+      AppState.globalResponsi[nim] = respObj;
+    }
+
+    // 7. Kedisiplinan
+    if (item.nilaiKedisiplinan != null) {
+      const curScores = (AppState.grades.k3Kedisiplinan[nim] && AppState.grades.k3Kedisiplinan[nim].scores) || {};
+      INDIKATOR_K3.forEach(ind => {
+        curScores[ind.id] = item.nilaiKedisiplinan;
+      });
+      AppState.grades.k3Kedisiplinan[nim] = {
+        aktif: true,
+        checklist: { k3_2: true, k3_4: true },
+        scores: curScores,
+        total: item.nilaiKedisiplinan,
+        catatan: (AppState.grades.k3Kedisiplinan[nim] ? AppState.grades.k3Kedisiplinan[nim].catatan : '')
+      };
+    }
+
+    // 8. Kehadiran
+    if (!AppState.grades.kehadiran[nim]) AppState.grades.kehadiran[nim] = [];
+    const normStatus = (item.statusHadir || 'Hadir').trim();
+    const existKIdx = AppState.grades.kehadiran[nim].findIndex(k => k.acaraId === acaraId);
+    const kObj = {
+      acaraId: acaraId,
+      status: normStatus,
+      tanggal: new Date().toISOString().split('T')[0],
+      keterangan: normStatus
+    };
+    if (existKIdx >= 0) {
+      AppState.grades.kehadiran[nim][existKIdx] = kObj;
+    } else {
+      AppState.grades.kehadiran[nim].push(kObj);
+    }
+
+    // 9. Catatan Evaluasi (jika ada)
+    if (item.catatanUmum) {
+      if (!AppState.grades.catatanEvaluasi[nim]) {
+        AppState.grades.catatanEvaluasi[nim] = { kelebihan: '-', kelemahan: '-', rekomendasi: '-', penilai: penilaiNama };
+      }
+      AppState.grades.catatanEvaluasi[nim].rekomendasi = item.catatanUmum;
+      AppState.grades.catatanEvaluasi[nim].penilai = penilaiNama;
+    }
+  });
+
+  saveCurrentPraktikumState();
+  saveStateToStorage();
+  closeModal();
+  renderApp();
+  showToast(`Nilai ${updatedCount} mahasiswa berhasil diimpor dari file Excel & disimpan!`, 'success');
+  triggerAutoCloudSync();
 }
 
 /**
@@ -5868,7 +6919,8 @@ async function syncWithGoogleSheets(isManual = false) {
           semester: (AppState.config && AppState.config.semester) || DEFAULT_CONFIG.semester,
           developerEmail: (AppState.config && AppState.config.developerEmail) || DEFAULT_CONFIG.developerEmail,
           selectedSignerKoordinatorId: (AppState.config && AppState.config.selectedSignerKoordinatorId) || DEFAULT_CONFIG.selectedSignerKoordinatorId,
-          weights: (AppState.config && AppState.config.weights) || DEFAULT_CONFIG.weights
+          weights: (AppState.config && AppState.config.weights) || DEFAULT_CONFIG.weights,
+          evaluationConfig: (AppState.config && AppState.config.evaluationConfig) || DEFAULT_EVALUATION_CONFIG
         }
       }
     };
@@ -5963,6 +7015,12 @@ async function pullFromGoogleSheets(isManual = true) {
         if (json.data.config.selectedSignerKoordinatorId) {
           AppState.config.selectedSignerKoordinatorId = json.data.config.selectedSignerKoordinatorId;
         }
+        if (json.data.config.evaluationConfig) {
+          AppState.config.evaluationConfig = json.data.config.evaluationConfig;
+        }
+        if (json.data.config.weights) {
+          AppState.config.weights = json.data.config.weights;
+        }
       }
 
       AppState.syncStatus.online = true;
@@ -6027,6 +7085,12 @@ async function pullFromGoogleSheetsSilent(showToastNotice = false) {
         if (!AppState.config) AppState.config = Object.assign({}, DEFAULT_CONFIG);
         if (json.data.config.selectedSignerKoordinatorId) {
           AppState.config.selectedSignerKoordinatorId = json.data.config.selectedSignerKoordinatorId;
+        }
+        if (json.data.config.evaluationConfig) {
+          AppState.config.evaluationConfig = json.data.config.evaluationConfig;
+        }
+        if (json.data.config.weights) {
+          AppState.config.weights = json.data.config.weights;
         }
       }
       AppState.syncStatus.online = true;
